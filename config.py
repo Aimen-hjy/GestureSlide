@@ -42,3 +42,8 @@ COLOR_SECONDARY = (255, 255, 0)   # 次要色 (青色)
 COLOR_WARNING = (0, 0, 255)       # 警告色 (红色)
 COLOR_TEXT = (255, 255, 255)      # 文字颜色 (白色)
 COLOR_BG = (30, 30, 30)           # 背景色 (深灰)
+
+# ================== ML模型设置 ==================
+ML_MODEL_PATH = "gesture_model.joblib"      # ML模型文件路径
+ML_SCALER_PATH = "gesture_scaler.joblib"    # 特征标准化器路径
+ML_CONFIDENCE_THRESHOLD = 0.6               # 置信度低于此阈值返回NONE

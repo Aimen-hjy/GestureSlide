@@ -3,10 +3,15 @@
 """
 
 import time
+import os
+import logging
 from collections import deque
 from enum import Enum, auto
 
+import numpy as np
+
 import config
+from gesture_model import extract_features, GESTURE_TO_ID, ID_TO_GESTURE
 
 
 class Gesture(Enum):
@@ -42,6 +47,12 @@ class GestureClassifier:
 
         # 滑动冷却
         self._last_swipe_time = 0.0
+
+        # ML模型
+        self._ml_model = None
+        self._ml_scaler = None
+        self._ml_enabled = False
+        self._load_ml_model()
 
     def classify(self, hand_data: dict | None) -> Gesture:
         """
@@ -84,7 +95,10 @@ class GestureClassifier:
                 return Gesture.OK_SIGN
 
         # 3. 按手指组合模式识别静态手势
-        gesture = self._classify_static(thumb, index, middle, ring, pinky)
+        if self._ml_enabled:
+            gesture = self._classify_ml(hand_data)
+        else:
+            gesture = self._classify_static(thumb, index, middle, ring, pinky)
         return gesture
 
     def _classify_static(self, thumb: bool, index: bool,
@@ -119,6 +133,55 @@ class GestureClassifier:
             return Gesture.THREE_FINGERS
 
         return Gesture.NONE
+
+    def _load_ml_model(self):
+        """加载ML模型, 若不存在则回退到规则分类"""
+        import joblib
+
+        model_path = config.ML_MODEL_PATH
+        scaler_path = config.ML_SCALER_PATH
+
+        if not os.path.exists(model_path):
+            logging.info(f"ML model not found at {model_path}, "
+                         f"using rule-based fallback")
+            return
+
+        try:
+            self._ml_model = joblib.load(model_path)
+            if os.path.exists(scaler_path):
+                self._ml_scaler = joblib.load(scaler_path)
+            self._ml_enabled = True
+            logging.info(f"ML model loaded from {model_path}")
+        except Exception as e:
+            logging.warning(f"Failed to load ML model: {e}, "
+                            f"using rule-based fallback")
+            self._ml_model = None
+            self._ml_enabled = False
+
+    def _classify_ml(self, hand_data: dict) -> Gesture:
+        """使用ML模型分类静态手势. 置信度不足时返回NONE"""
+        # 提取69维特征
+        features = extract_features(hand_data)
+        X = features.reshape(1, -1)
+
+        # 标准化 (仅坐标部分 [0:63])
+        if self._ml_scaler is not None:
+            X[:, :63] = self._ml_scaler.transform(X[:, :63])
+
+        # 预测
+        probas = self._ml_model.predict_proba(X)[0]
+        max_idx = int(np.argmax(probas))
+        max_prob = float(probas[max_idx])
+
+        if max_prob < config.ML_CONFIDENCE_THRESHOLD:
+            return Gesture.NONE
+
+        # 将ML输出的字符串标签映射回 Gesture 枚举
+        gesture_name = ID_TO_GESTURE.get(max_idx, "NONE")
+        try:
+            return Gesture[gesture_name]
+        except KeyError:
+            return Gesture.NONE
 
     def _detect_swipe(self, landmarks: list) -> Gesture:
         """
