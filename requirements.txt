@@ -1,5 +1,5 @@
 opencv-python>=4.8.0,<4.11
 opencv-contrib-python>=4.8.0,<4.11
-mediapipe>=0.10.0
+mediapipe>=0.10.0,<0.10.15
 pyautogui>=0.9.54
 numpy>=1.24.0,<2.0
