@@ -114,39 +114,39 @@ class PPTController:
 
     def _handle_normal_mode(self, gesture: Gesture, landmarks: list):
         """Normal mode gesture handling"""
-        if gesture == Gesture.SWIPE_RIGHT:
-            if self.gesture_classifier.should_trigger(
-                    gesture, config.SWIPE_GESTURE_COOLDOWN):
-                self.action_controller.next_slide()
-                self.status_message = "Next Slide"
-
-        elif gesture == Gesture.SWIPE_LEFT:
+        if gesture == Gesture.LEFT_POINT:
             if self.gesture_classifier.should_trigger(
                     gesture, config.SWIPE_GESTURE_COOLDOWN):
                 self.action_controller.prev_slide()
                 self.status_message = "Prev Slide"
 
-        elif gesture == Gesture.FIST:
-            if self.gesture_classifier.should_trigger(gesture):
-                self.action_controller.toggle_black_screen()
-                self.status_message = "Toggle Black"
+        elif gesture == Gesture.RIGHT_POINT:
+            if self.gesture_classifier.should_trigger(
+                    gesture, config.SWIPE_GESTURE_COOLDOWN):
+                self.action_controller.next_slide()
+                self.status_message = "Next Slide"
 
-        elif gesture == Gesture.OK_SIGN:
+        elif gesture == Gesture.OPEN_PALM:
             if self.gesture_classifier.should_trigger(gesture):
-                self.action_controller.start_slideshow()
-                self.status_message = "Start Slideshow"
+                self.action_controller.exit_slideshow()
+                self.status_message = "Exit Slideshow"
 
         elif gesture == Gesture.POINT_INDEX:
             if self.gesture_classifier.should_trigger(gesture):
                 self._enter_mouse_mode(landmarks)
                 self.status_message = "Enter Mouse Mode"
 
-        elif gesture == Gesture.PEACE:
+        elif gesture == Gesture.OK_SIGN:
+            if self.gesture_classifier.should_trigger(gesture):
+                self.action_controller.start_slideshow()
+                self.status_message = "Start Slideshow"
+
+        elif gesture == Gesture.PEACE_UP:
             if self.gesture_classifier.should_trigger(gesture):
                 self.action_controller.volume_up()
                 self.status_message = "Volume Up"
 
-        elif gesture == Gesture.THREE_FINGERS:
+        elif gesture == Gesture.PEACE_DOWN:
             if self.gesture_classifier.should_trigger(gesture):
                 self.action_controller.volume_down()
                 self.status_message = "Volume Down"
@@ -156,22 +156,10 @@ class PPTController:
                 self.action_controller.start_slideshow()
                 self.status_message = "Start Slideshow"
 
-        elif gesture == Gesture.PINKY_ONLY:
-            if self.gesture_classifier.should_trigger(gesture):
-                self.action_controller.exit_slideshow()
-                self.status_message = "Exit Slideshow"
-
     def _handle_mouse_mode(self, gesture: Gesture, landmarks: list):
         """Mouse mode gesture handling"""
         # Exit condition: open palm
         if gesture == Gesture.OPEN_PALM:
-            if self.gesture_classifier.should_trigger(gesture):
-                self._exit_mouse_mode()
-                self.status_message = "Exit Mouse Mode, Ready"
-            return
-
-        # Exit condition: fist
-        if gesture == Gesture.FIST:
             if self.gesture_classifier.should_trigger(gesture):
                 self._exit_mouse_mode()
                 self.status_message = "Exit Mouse Mode, Ready"

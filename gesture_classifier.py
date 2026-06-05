@@ -5,7 +5,6 @@
 import time
 import os
 import logging
-from collections import deque
 from enum import Enum, auto
 
 import numpy as np
@@ -19,15 +18,16 @@ class Gesture(Enum):
     NONE = auto()            # 无手势
     OPEN_PALM = auto()       # 五指张开
     FIST = auto()            # 握拳
-    SWIPE_LEFT = auto()      # 左滑
-    SWIPE_RIGHT = auto()     # 右滑
+    LEFT_POINT = auto()      # 食指左指
+    RIGHT_POINT = auto()     # 食指右指
+    DOWN_POINT = auto()      # 食指下指
     OK_SIGN = auto()         # OK手势 (拇指+食指圈, 其余伸展)
-    POINT_INDEX = auto()     # 仅食指伸展 (指向)
+    POINT_INDEX = auto()     # 仅食指伸展 (朝上/向前, 进入鼠标模式)
     PINCH = auto()           # 拇指食指捏合
-    PEACE = auto()           # 食指+中指伸展 (V手势)
+    PEACE_UP = auto()        # V手势朝上
+    PEACE_DOWN = auto()      # V手势朝下
     THREE_FINGERS = auto()   # 食指+中指+无名指伸展
     THUMB_UP = auto()        # 仅拇指竖起
-    PINKY_ONLY = auto()      # 仅小指伸展
     TWO_FINGERS_CLOSE = auto()  # 食指中指并拢
 
 
@@ -35,18 +35,12 @@ class GestureClassifier:
     """手势识别分类器"""
 
     def __init__(self):
-        # 滑动检测: 维护最近N帧手腕x坐标
-        self._wrist_x_history = deque(maxlen=config.SWIPE_HISTORY_SIZE)
-
         # 手势防抖: 记录每种手势的上次触发时间
         self._last_trigger_time: dict[Gesture, float] = {}
 
         # 手势持续帧计数: 同一手势需持续N帧才确认
         self._gesture_frame_count: dict[Gesture, int] = {}
         self._last_raw_gesture: Gesture = Gesture.NONE
-
-        # 滑动冷却
-        self._last_swipe_time = 0.0
 
         # ML模型
         self._ml_model = None
@@ -79,12 +73,7 @@ class GestureClassifier:
 
         thumb, index, middle, ring, pinky = finger_states
 
-        # 1. 检测滑动 (基于手腕位置)
-        swipe = self._detect_swipe(landmarks)
-        if swipe != Gesture.NONE:
-            return swipe
-
-        # 2. 先检测捏合 (拇指+食指靠近)
+        # 1. 检测捏合 (拇指+食指靠近)
         pinch_distance = hand_data.get("thumb_index_dist", 1.0)
         if pinch_distance < config.PINCH_DISTANCE_THRESHOLD:
             # 拇指食捏合 + 其他手指弯曲 = PINCH (鼠标点击)
@@ -94,11 +83,12 @@ class GestureClassifier:
             if middle and ring and pinky:
                 return Gesture.OK_SIGN
 
-        # 3. 按手指组合模式识别静态手势
+        # 2. 按手指组合模式识别静态手势 (ML或规则)
         if self._ml_enabled:
             gesture = self._classify_ml(hand_data)
         else:
             gesture = self._classify_static(thumb, index, middle, ring, pinky)
+
         return gesture
 
     def _classify_static(self, thumb: bool, index: bool,
@@ -182,44 +172,6 @@ class GestureClassifier:
             return Gesture[gesture_name]
         except KeyError:
             return Gesture.NONE
-
-    def _detect_swipe(self, landmarks: list) -> Gesture:
-        """
-        检测水平滑动手势
-
-        维护手腕x坐标的历史记录，
-        累计位移超过阈值则判定为滑动
-        """
-        wrist_x = landmarks[0]["x"]  # 归一化x坐标 [0, 1]
-        self._wrist_x_history.append(wrist_x)
-
-        if len(self._wrist_x_history) < self._wrist_x_history.maxlen:
-            return Gesture.NONE
-
-        # 计算总位移
-        displacement = (self._wrist_x_history[-1] -
-                        self._wrist_x_history[0])
-
-        # 转换为像素
-        displacement_px = displacement * config.FRAME_WIDTH
-
-        now = time.time()
-        if now - self._last_swipe_time < config.SWIPE_COOLDOWN:
-            return Gesture.NONE
-
-        if abs(displacement_px) > config.SWIPE_THRESHOLD:
-            self._last_swipe_time = now
-            self._wrist_x_history.clear()
-            if displacement_px < 0:
-                return Gesture.SWIPE_LEFT
-            else:
-                return Gesture.SWIPE_RIGHT
-
-        return Gesture.NONE
-
-    def _reset_swipe(self):
-        """重置滑动检测历史"""
-        self._wrist_x_history.clear()
 
     def should_trigger(self, gesture: Gesture,
                        cooldown: float | None = None) -> bool:

@@ -7,7 +7,10 @@
 """
 
 import os
+import json
 import logging
+from pathlib import Path
+
 import numpy as np
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
@@ -21,10 +24,13 @@ GESTURE_NAMES = [
     "NONE",
     "OPEN_PALM",
     "FIST",
+    "LEFT_POINT",
+    "RIGHT_POINT",
+    "DOWN_POINT",
     "POINT_INDEX",
     "THUMB_UP",
-    "PINKY_ONLY",
-    "PEACE",
+    "PEACE_UP",
+    "PEACE_DOWN",
     "THREE_FINGERS",
 ]
 
@@ -192,12 +198,25 @@ def generate_synthetic_data(n_per_class: int = 1000,
     GESTURE_FINGERS = {
         "OPEN_PALM":     [True,  True,  True,  True,  True],
         "FIST":          [False, False, False, False, False],
+        "LEFT_POINT":    [False, True,  False, False, False],
+        "RIGHT_POINT":   [False, True,  False, False, False],
+        "DOWN_POINT":    [False, True,  False, False, False],
         "POINT_INDEX":   [False, True,  False, False, False],
         "THUMB_UP":      [True,  False, False, False, False],
-        "PINKY_ONLY":    [False, False, False, False, True],
-        "PEACE":         [False, True,  True,  False, False],
+        "PEACE_UP":      [False, True,  True,  False, False],
+        "PEACE_DOWN":    [False, True,  True,  False, False],
         "THREE_FINGERS": [False, True,  True,  True,  False],
-        "NONE":          None,  # NONE 使用随机手指组合
+        "NONE":          None,
+    }
+
+    # 指尖方向偏移: (tip_y_shift) 正值=向下
+    DIRECTION_SHIFT = {
+        "LEFT_POINT":  (-0.18, 0.0),
+        "RIGHT_POINT": (0.18, 0.0),
+        "DOWN_POINT":  (0.0, 0.25),
+        "POINT_INDEX": (0.0, 0.0),
+        "PEACE_UP":    (0.0, 0.0),
+        "PEACE_DOWN":  (0.0, 0.25),
     }
 
     X_list, y_list = [], []
@@ -226,6 +245,19 @@ def generate_synthetic_data(n_per_class: int = 1000,
                     if not should_extend:
                         landmarks = HandTemplate.get_bent_finger(
                             landmarks, finger_name)
+
+            # 2.5 指尖方向偏移 (点指/V手势)
+            if gesture_name in DIRECTION_SHIFT:
+                dx, dy = DIRECTION_SHIFT[gesture_name]
+                # 食指
+                idx_tip = HandTemplate.INDEX_TIP * 3
+                landmarks[idx_tip] += dx
+                landmarks[idx_tip + 1] += dy
+                # V手势需要同时偏移中指
+                if gesture_name.startswith("PEACE"):
+                    mid_tip = HandTemplate.MIDDLE_TIP * 3
+                    landmarks[mid_tip] += dx
+                    landmarks[mid_tip + 1] += dy
 
             # 3. 添加随机变化
             # a) 高斯噪声 (模拟检测抖动)
@@ -336,6 +368,48 @@ def extract_features(hand_data: dict) -> np.ndarray:
     return features.astype(np.float64)
 
 
+def load_real_data(data_dir: str = "training_data") -> tuple[np.ndarray, np.ndarray]:
+    """
+    从采集的JSON文件中加载真实训练数据
+
+    Args:
+        data_dir: 存放 session_*.json 的目录
+
+    Returns:
+        X: 特征矩阵 (n_samples × 69)
+        y: 标签数组 (n_samples,)
+    """
+    import glob
+    data_path = Path(data_dir)
+    json_files = sorted(glob.glob(str(data_path / "session_*.json")))
+
+    if not json_files:
+        raise FileNotFoundError(
+            f"No session_*.json files found in {data_dir}. "
+            f"Run 'python main.py --collect' first.")
+
+    X_list, y_list = [], []
+    class_counts = {name: 0 for name in GESTURE_NAMES}
+
+    for path in json_files:
+        with open(path, 'r', encoding='utf-8') as f:
+            samples = json.load(f)
+        for s in samples:
+            X_list.append(s["features"])
+            y_list.append(s["label_id"])
+            class_counts[s["label"]] += 1
+
+    X = np.array(X_list, dtype=np.float64)
+    y = np.array(y_list, dtype=np.int32)
+
+    print(f"Loaded {len(X)} samples from {len(json_files)} file(s):")
+    for name in GESTURE_NAMES:
+        if class_counts[name] > 0:
+            print(f"  {name}: {class_counts[name]}")
+
+    return X, y
+
+
 class GestureModel:
     """手势识别MLP模型 — 加载/推理/训练"""
 
@@ -371,7 +445,7 @@ class GestureModel:
 
         X = features.reshape(1, -1)
         if self.scaler is not None:
-            X = self.scaler.transform(X)
+            X[:, :63] = self.scaler.transform(X[:, :63])
 
         probas = self.model.predict_proba(X)[0]
         max_idx = int(np.argmax(probas))
@@ -439,6 +513,131 @@ class GestureModel:
         print(confusion_matrix(y_test, y_pred))
 
         # 保存
+        joblib.dump(model, model_path)
+        joblib.dump(scaler, scaler_path)
+        print(f"\nModel saved to {model_path}")
+        print(f"Scaler saved to {scaler_path}")
+
+        return {
+            "accuracy": acc,
+            "model_path": model_path,
+            "scaler_path": scaler_path,
+            "n_samples": len(X),
+        }
+
+    @staticmethod
+    def train_from_real(data_dir: str = "training_data",
+                        test_size: float = 0.2,
+                        model_path: str = "gesture_model.joblib",
+                        scaler_path: str = "gesture_scaler.joblib",
+                        seed: int = 42) -> dict:
+        """使用真实采集数据训练模型并保存"""
+        X, y = load_real_data(data_dir)
+
+        # 分层划分
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=y, random_state=seed)
+
+        scaler = StandardScaler()
+        X_train_scaled = X_train.copy()
+        X_test_scaled = X_test.copy()
+        X_train_scaled[:, :63] = scaler.fit_transform(X_train[:, :63])
+        X_test_scaled[:, :63] = scaler.transform(X_test[:, :63])
+
+        print(f"\nTraining MLP (hidden: 128,64)...")
+        model = MLPClassifier(
+            hidden_layer_sizes=(128, 64),
+            activation='relu',
+            solver='adam',
+            max_iter=500,
+            early_stopping=True,
+            validation_fraction=0.1,
+            random_state=seed,
+            verbose=True,
+        )
+        model.fit(X_train_scaled, y_train)
+
+        y_pred = model.predict(X_test_scaled)
+        acc = accuracy_score(y_test, y_pred)
+
+        print(f"\n{'='*55}")
+        print(f"  Test Accuracy: {acc:.4f}")
+        print(f"{'='*55}")
+        print(f"\nClassification Report:")
+        print(classification_report(y_test, y_pred,
+              target_names=GESTURE_NAMES))
+        print(f"Confusion Matrix:")
+        print(confusion_matrix(y_test, y_pred))
+
+        joblib.dump(model, model_path)
+        joblib.dump(scaler, scaler_path)
+        print(f"\nModel saved to {model_path}")
+        print(f"Scaler saved to {scaler_path}")
+
+        return {
+            "accuracy": acc,
+            "model_path": model_path,
+            "scaler_path": scaler_path,
+            "n_samples": len(X),
+        }
+
+    @staticmethod
+    def train_from_mixed(data_dir: str = "training_data",
+                         synth_per_class: int = 500,
+                         noise_std: float = 0.02,
+                         test_size: float = 0.2,
+                         model_path: str = "gesture_model.joblib",
+                         scaler_path: str = "gesture_scaler.joblib",
+                         seed: int = 42) -> dict:
+        """混合真实数据 + 合成数据训练"""
+        # 加载真实数据
+        X_real, y_real = load_real_data(data_dir)
+        print(f"Real data: {len(X_real)} samples")
+
+        # 生成合成数据
+        X_synth, y_synth = generate_synthetic_data(
+            n_per_class=synth_per_class, noise_std=noise_std, seed=seed)
+        print(f"Synthetic data: {len(X_synth)} samples")
+
+        # 合并
+        X = np.vstack([X_real, X_synth])
+        y = np.hstack([y_real, y_synth])
+        print(f"Total: {len(X)} samples")
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=y, random_state=seed)
+
+        scaler = StandardScaler()
+        X_train_scaled = X_train.copy()
+        X_test_scaled = X_test.copy()
+        X_train_scaled[:, :63] = scaler.fit_transform(X_train[:, :63])
+        X_test_scaled[:, :63] = scaler.transform(X_test[:, :63])
+
+        print(f"\nTraining MLP (hidden: 128,64)...")
+        model = MLPClassifier(
+            hidden_layer_sizes=(128, 64),
+            activation='relu',
+            solver='adam',
+            max_iter=500,
+            early_stopping=True,
+            validation_fraction=0.1,
+            random_state=seed,
+            verbose=True,
+        )
+        model.fit(X_train_scaled, y_train)
+
+        y_pred = model.predict(X_test_scaled)
+        acc = accuracy_score(y_test, y_pred)
+
+        print(f"\n{'='*55}")
+        print(f"  Test Accuracy: {acc:.4f}")
+        print(f"{'='*55}")
+        print(f"\nClassification Report:")
+        print(classification_report(y_test, y_pred,
+              target_names=GESTURE_NAMES))
+        print(f"Confusion Matrix:")
+        print(confusion_matrix(y_test, y_pred))
+
         joblib.dump(model, model_path)
         joblib.dump(scaler, scaler_path)
         print(f"\nModel saved to {model_path}")
