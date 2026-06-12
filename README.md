@@ -52,10 +52,13 @@ GestureSlide/
 ### 1. 安装依赖
 
 ```bash
+#Linux
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+#Windows
+pip install -r requirements.txt
 ```
 
 Debian/Ubuntu 若提示 `externally-managed-environment`，不要使用系统级
