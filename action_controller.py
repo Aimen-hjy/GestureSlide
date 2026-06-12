@@ -65,14 +65,22 @@ class ActionController:
     # ==================== 音量控制 ====================
 
     def volume_up(self):
-        """音量增大"""
+        """音量增大（单次）"""
         pyautogui.press("volumeup")
         print("[动作] 音量+")
 
     def volume_down(self):
-        """音量减小"""
+        """音量减小（单次）"""
         pyautogui.press("volumedown")
         print("[动作] 音量-")
+
+    def volume_up_press(self):
+        """循环连按时音量+"""
+        pyautogui.press("volumeup")
+
+    def volume_down_press(self):
+        """循环连按时音量-"""
+        pyautogui.press("volumedown")
 
     def volume_mute(self):
         """静音切换"""

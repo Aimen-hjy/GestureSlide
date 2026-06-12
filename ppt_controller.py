@@ -43,6 +43,11 @@ class PPTController:
         self.fps: float = 0.0
         self._fps_times: list[float] = []
 
+        # Volume key hold state
+        self._volume_active: str | None = None  # "up" / "down" / None
+        self._volume_debounce: int = 0          # debounce for press
+        self._volume_tick: int = 0              # frame counter for rapid press
+
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """
         Process one frame: detect → classify → execute → render
@@ -72,10 +77,32 @@ class PPTController:
 
             # 2. Gesture classification
             raw_gesture = self.gesture_classifier.classify(hand_data)
+            self.current_gesture = raw_gesture  # Raw result for UI display
+
+            # ── Volume rapid-press (raw gesture, avoids stabilizer gap) ──
+            VOLUME_INTERVAL = 5  # press every N frames (~6/sec at 30fps)
+
+            if raw_gesture in (Gesture.PEACE_UP, Gesture.PEACE_DOWN):
+                target = "up" if raw_gesture == Gesture.PEACE_UP else "down"
+                if self._volume_active == target:
+                    self._volume_tick += 1
+                    if self._volume_tick >= VOLUME_INTERVAL:
+                        self.action_controller.volume_up_press() if target == "up" else self.action_controller.volume_down_press()
+                        self._volume_tick = 0
+                else:
+                    self._volume_debounce += 1
+                    if self._volume_debounce >= 3:
+                        self._volume_active = target
+                        self._volume_debounce = 0
+                        self._volume_tick = 0
+                        target_name = "Up" if target == "up" else "Down"
+                        self.status_message = f"Volume {target_name}"
+            else:
+                self._volume_debounce = 0
+                self._volume_active = None
 
             # Gesture stabilization (must persist N frames)
             stable_gesture = self.gesture_classifier.get_stable_gesture(raw_gesture)
-            self.current_gesture = raw_gesture  # Raw result for UI display
 
             # 鼠标移动是连续动作，不应等待每 N 帧一次的稳定确认。
             if (self.mode == ControllerMode.MOUSE
@@ -98,6 +125,8 @@ class PPTController:
             self._mouse_ref_x = None
             self._mouse_ref_y = None
             self.action_controller.reset_mouse_smoothing()
+            # Release volume key
+            self._volume_active = None
 
         # 5. Render UI overlay
         frame = self._render_overlay(frame)
@@ -146,16 +175,6 @@ class PPTController:
             if self.gesture_classifier.should_trigger(gesture):
                 self.action_controller.start_slideshow()
                 self.status_message = "Start Slideshow"
-
-        elif gesture == Gesture.PEACE_UP:
-            if self.gesture_classifier.should_trigger(gesture):
-                self.action_controller.volume_up()
-                self.status_message = "Volume Up"
-
-        elif gesture == Gesture.PEACE_DOWN:
-            if self.gesture_classifier.should_trigger(gesture):
-                self.action_controller.volume_down()
-                self.status_message = "Volume Down"
 
         elif gesture == Gesture.THUMB_UP:
             if self.gesture_classifier.should_trigger(gesture):
