@@ -11,6 +11,7 @@
 import sys
 import json
 import time
+import platform
 import ctypes
 import argparse
 from pathlib import Path
@@ -33,12 +34,31 @@ SWP_NOSIZE = 0x0001
 
 
 def set_window_topmost():
-    """将 OpenCV 窗口置顶"""
-    hwnd = ctypes.windll.user32.FindWindowW(None, WINDOW_NAME)
-    if hwnd:
-        ctypes.windll.user32.SetWindowPos(
-            hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+    """将 OpenCV 窗口置顶；非 Windows 系统直接跳过。"""
+    if platform.system() != "Windows":
+        print("[系统] 当前为非 Windows 系统，跳过窗口置顶设置")
+        return
 
+    try:
+        hwnd = ctypes.windll.user32.FindWindowW(None, WINDOW_NAME)
+
+        if hwnd:
+            HWND_TOPMOST = -1
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_SHOWWINDOW = 0x0040
+
+            ctypes.windll.user32.SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            )
+    except Exception as exc:
+        print(f"[警告] 无法设置窗口置顶: {exc}")
 
 def print_instructions():
     """打印操作说明"""
