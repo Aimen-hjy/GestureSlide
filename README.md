@@ -26,7 +26,7 @@
 ## 系统架构
 
 ```
-groupwork/
+GestureSlide/
 ├── main.py                   # 主程序入口 + 可视化UI
 ├── config.py                 # 全局配置参数
 ├── hand_detector.py          # MediaPipe手部检测封装
@@ -43,7 +43,7 @@ groupwork/
 
 ## 环境要求
 
-- Python 3.8+
+- Python 3.10+
 - Windows / macOS / Linux
 - 摄像头 (内置或USB)
 
@@ -52,10 +52,16 @@ groupwork/
 ### 1. 安装依赖
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-### 2. 生成手势分类模型 (首次运行仅需一次)
+Debian/Ubuntu 若提示 `externally-managed-environment`，不要使用系统级
+`pip`；应使用上面的虚拟环境。
+
+### 2. 生成或重新训练手势分类模型
 
 ```bash
 python train_model.py
@@ -90,7 +96,7 @@ python main.py
 
 ## 数据采集（训练自定义模型）
 
-默认使用合成数据训练模型。如需更高准确率，可采集真实手部数据重新训练。
+项目附带模型可直接运行。若要适配自己的手型、摄像头和环境，应采集真实数据重新训练。
 
 ### 1. 采集模式
 
@@ -106,7 +112,7 @@ python main.py --collect
 | s | 保存当前数据 |
 | q | 保存数据并退出 |
 
-每种手势建议在摄像头前变换角度、持续录制 10-30 秒，数据文件保存在 `training_data/` 目录下。
+每种手势建议分多次、在不同距离/角度/光照下录制；每类至少保留 3 个独立采集文件。标签 `NONE` 应录制“有手但不属于任何命令”的随机姿势，而不是空画面。数据文件保存在 `training_data/` 目录下。切换标签前先暂停录制，避免过渡帧被标错。
 
 ### 2. 用真实数据训练
 
@@ -126,7 +132,7 @@ python train_model.py --mix training_data/
 使用 Google MediaPipe Hands 模型，实时检测21个手部关键点坐标。
 
 ### 手势识别 (ML + 规则混合)
-- **ML 模型**：使用 MLP 神经网络（128→64，69维输入特征）直接分类 11 种静态手势（NONE / OPEN_PALM / FIST / LEFT_POINT / RIGHT_POINT / DOWN_POINT / POINT_INDEX / THUMB_UP / PEACE_UP / PEACE_DOWN / THREE_FINGERS），含方向变体。模型使用合成数据训练，准确率 >98%。
+- **ML 模型**：使用 MLP 神经网络（128→64，69维输入特征）直接分类 11 种静态手势（NONE / OPEN_PALM / FIST / LEFT_POINT / RIGHT_POINT / DOWN_POINT / POINT_INDEX / THUMB_UP / PEACE_UP / PEACE_DOWN / THREE_FINGERS），含方向变体。随机帧拆分可能得到很高准确率，但不能代表跨采集会话的实机表现；评估时应按采集文件分组留出测试集。
 - **捏合检测**：计算拇指尖与食指尖的归一化距离，小于阈值判定为捏合（PINCH / OK_SIGN）。
 
 ### 防抖机制
@@ -153,4 +159,12 @@ python train_model.py --mix training_data/
 4. 程序使用 `pyautogui.FAILSAFE`，将鼠标移到屏幕角落可紧急停止
 5. 如遇摄像头无法打开，请检查 `config.py` 中的 `CAMERA_ID` 设置
 6. 首次运行需先执行 `python train_model.py` 生成模型文件
-7. 模型文件缺失时自动回退到规则分类，不影响基本使用
+7. 模型文件缺失时会回退到规则分类，但规则模式无法可靠区分左/右/下方向手势
+
+
+## Linux / Wayland 注意事项
+
+`pyautogui` 向当前获得焦点的窗口发送键盘事件。运行后应确保 PPT/Impress
+放映窗口处于前台；预览窗口获得焦点时，翻页键可能发送到预览窗口。
+Wayland 会限制全局键鼠模拟，遇到控制无效时可改用 Xorg 会话，或实现针对
+LibreOffice/PowerPoint 的专用控制后端。

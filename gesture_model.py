@@ -3,7 +3,7 @@
 
 使用 MLP 神经网络替代硬编码规则判断静态手势。
 特征: 69维 (21个关键点相对手腕坐标×3 + 5手指状态 + 1拇指食指距离)
-输出: 8类静态手势
+输出: 11类静态手势
 """
 
 import os
@@ -37,6 +37,29 @@ GESTURE_NAMES = [
 GESTURE_TO_ID = {name: i for i, name in enumerate(GESTURE_NAMES)}
 ID_TO_GESTURE = {i: name for i, name in enumerate(GESTURE_NAMES)}
 N_CLASSES = len(GESTURE_NAMES)
+FEATURE_DIM = 69
+COORD_FEATURE_DIM = 63
+
+
+def _print_evaluation(y_test: np.ndarray, y_pred: np.ndarray,
+                      model: MLPClassifier) -> None:
+    """按模型实际包含的类别输出分类报告与混淆矩阵。"""
+    labels = np.asarray(model.classes_, dtype=np.int32)
+    target_names = [
+        ID_TO_GESTURE.get(int(label), str(label))
+        for label in labels
+    ]
+
+    print("\nClassification Report:")
+    print(classification_report(
+        y_test,
+        y_pred,
+        labels=labels,
+        target_names=target_names,
+        zero_division=0,
+    ))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, y_pred, labels=labels))
 
 # ──────────────────────────────────────────────────────────
 # 手部骨架模板 (右手, 所有手指伸展的"理想"姿态)
@@ -394,10 +417,43 @@ def load_real_data(data_dir: str = "training_data") -> tuple[np.ndarray, np.ndar
     for path in json_files:
         with open(path, 'r', encoding='utf-8') as f:
             samples = json.load(f)
-        for s in samples:
-            X_list.append(s["features"])
-            y_list.append(s["label_id"])
-            class_counts[s["label"]] += 1
+
+        if not isinstance(samples, list):
+            raise ValueError(f"{path}: top-level JSON value must be a list")
+
+        for sample_index, s in enumerate(samples):
+            if not isinstance(s, dict):
+                raise ValueError(
+                    f"{path}: sample {sample_index} must be an object")
+
+            try:
+                features = np.asarray(s["features"], dtype=np.float64)
+                label_id = int(s["label_id"])
+                label_name = str(s["label"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{path}: invalid sample {sample_index}: {exc}") from exc
+
+            if features.shape != (FEATURE_DIM,):
+                raise ValueError(
+                    f"{path}: sample {sample_index} has feature shape "
+                    f"{features.shape}, expected ({FEATURE_DIM},)")
+            if not np.all(np.isfinite(features)):
+                raise ValueError(
+                    f"{path}: sample {sample_index} contains NaN or Inf")
+            if label_id not in ID_TO_GESTURE:
+                raise ValueError(
+                    f"{path}: sample {sample_index} has unknown label_id "
+                    f"{label_id}")
+            if ID_TO_GESTURE[label_id] != label_name:
+                raise ValueError(
+                    f"{path}: sample {sample_index} label mismatch: "
+                    f"id {label_id} means {ID_TO_GESTURE[label_id]}, "
+                    f"but label is {label_name}")
+
+            X_list.append(features)
+            y_list.append(label_id)
+            class_counts[label_name] += 1
 
     X = np.array(X_list, dtype=np.float64)
     y = np.array(y_list, dtype=np.int32)
@@ -443,15 +499,22 @@ class GestureModel:
         if self.model is None:
             return ("NONE", 0.0)
 
-        X = features.reshape(1, -1)
+        features = np.asarray(features, dtype=np.float64)
+        if features.shape != (FEATURE_DIM,):
+            raise ValueError(
+                f"Expected {FEATURE_DIM} features, got {features.shape}")
+
+        X = features.reshape(1, -1).copy()
         if self.scaler is not None:
-            X[:, :63] = self.scaler.transform(X[:, :63])
+            X[:, :COORD_FEATURE_DIM] = self.scaler.transform(
+                X[:, :COORD_FEATURE_DIM])
 
         probas = self.model.predict_proba(X)[0]
         max_idx = int(np.argmax(probas))
         max_prob = float(probas[max_idx])
 
-        gesture_name = ID_TO_GESTURE.get(max_idx, "NONE")
+        class_id = int(self.model.classes_[max_idx])
+        gesture_name = ID_TO_GESTURE.get(class_id, "NONE")
         return (gesture_name, max_prob)
 
     def is_loaded(self) -> bool:
@@ -506,11 +569,7 @@ class GestureModel:
         print(f"\n{'='*55}")
         print(f"  Test Accuracy: {acc:.4f}")
         print(f"{'='*55}")
-        print(f"\nClassification Report:")
-        print(classification_report(y_test, y_pred,
-              target_names=GESTURE_NAMES))
-        print(f"Confusion Matrix:")
-        print(confusion_matrix(y_test, y_pred))
+        _print_evaluation(y_test, y_pred, model)
 
         # 保存
         joblib.dump(model, model_path)
@@ -563,11 +622,7 @@ class GestureModel:
         print(f"\n{'='*55}")
         print(f"  Test Accuracy: {acc:.4f}")
         print(f"{'='*55}")
-        print(f"\nClassification Report:")
-        print(classification_report(y_test, y_pred,
-              target_names=GESTURE_NAMES))
-        print(f"Confusion Matrix:")
-        print(confusion_matrix(y_test, y_pred))
+        _print_evaluation(y_test, y_pred, model)
 
         joblib.dump(model, model_path)
         joblib.dump(scaler, scaler_path)
@@ -632,11 +687,7 @@ class GestureModel:
         print(f"\n{'='*55}")
         print(f"  Test Accuracy: {acc:.4f}")
         print(f"{'='*55}")
-        print(f"\nClassification Report:")
-        print(classification_report(y_test, y_pred,
-              target_names=GESTURE_NAMES))
-        print(f"Confusion Matrix:")
-        print(confusion_matrix(y_test, y_pred))
+        _print_evaluation(y_test, y_pred, model)
 
         joblib.dump(model, model_path)
         joblib.dump(scaler, scaler_path)

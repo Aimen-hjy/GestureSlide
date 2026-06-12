@@ -10,7 +10,7 @@ from enum import Enum, auto
 import numpy as np
 
 import config
-from gesture_model import extract_features, GESTURE_TO_ID, ID_TO_GESTURE
+from gesture_model import extract_features, ID_TO_GESTURE
 
 
 class Gesture(Enum):
@@ -62,7 +62,8 @@ class GestureClassifier:
             识别出的 Gesture 枚举值
         """
         if hand_data is None:
-            self._reset_swipe()
+            self._gesture_frame_count.clear()
+            self._last_raw_gesture = Gesture.NONE
             return Gesture.NONE
 
         landmarks = hand_data["landmarks"]
@@ -110,13 +111,13 @@ class GestureClassifier:
         if thumb and not index and not middle and not ring and not pinky:
             return Gesture.THUMB_UP
 
-        # 仅小指伸展 → PINKY_ONLY
+        # 仅小指伸展目前没有对应动作
         if pinky and not index and not middle and not ring:
-            return Gesture.PINKY_ONLY
+            return Gesture.NONE
 
-        # 食指+中指伸展 (V手势) → PEACE
+        # 规则模式无法可靠区分 V 手势朝上/朝下，默认按朝上处理
         if index and middle and not ring and not pinky:
-            return Gesture.PEACE
+            return Gesture.PEACE_UP
 
         # 食指+中指+无名指伸展 → THREE_FINGERS
         if index and middle and ring and not pinky:
@@ -137,9 +138,21 @@ class GestureClassifier:
             return
 
         try:
+            if not os.path.exists(scaler_path):
+                logging.warning(
+                    f"ML scaler not found at {scaler_path}; "
+                    "using rule-based fallback"
+                )
+                return
+
             self._ml_model = joblib.load(model_path)
-            if os.path.exists(scaler_path):
-                self._ml_scaler = joblib.load(scaler_path)
+            self._ml_scaler = joblib.load(scaler_path)
+
+            if getattr(self._ml_model, "n_features_in_", None) != 69:
+                raise ValueError("Model feature dimension is not 69")
+            if getattr(self._ml_scaler, "n_features_in_", None) != 63:
+                raise ValueError("Scaler feature dimension is not 63")
+
             self._ml_enabled = True
             logging.info(f"ML model loaded from {model_path}")
         except Exception as e:
@@ -166,8 +179,10 @@ class GestureClassifier:
         if max_prob < config.ML_CONFIDENCE_THRESHOLD:
             return Gesture.NONE
 
-        # 将ML输出的字符串标签映射回 Gesture 枚举
-        gesture_name = ID_TO_GESTURE.get(max_idx, "NONE")
+        # predict_proba 的列序号不一定等于真实类别 ID。
+        # 真实数据未包含 NONE 时，classes_ 通常为 [1, ..., 10]。
+        class_id = int(self._ml_model.classes_[max_idx])
+        gesture_name = ID_TO_GESTURE.get(class_id, "NONE")
         try:
             return Gesture[gesture_name]
         except KeyError:

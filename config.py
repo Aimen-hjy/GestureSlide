@@ -2,6 +2,10 @@
 全局配置参数
 """
 
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+
 # ================== 摄像头设置 ==================
 CAMERA_ID = 0               # 摄像头设备ID (0=默认摄像头)
 FRAME_WIDTH = 640           # 帧宽度
@@ -44,6 +48,6 @@ COLOR_TEXT = (255, 255, 255)      # 文字颜色 (白色)
 COLOR_BG = (30, 30, 30)           # 背景色 (深灰)
 
 # ================== ML模型设置 ==================
-ML_MODEL_PATH = "gesture_model.joblib"      # ML模型文件路径
-ML_SCALER_PATH = "gesture_scaler.joblib"    # 特征标准化器路径
+ML_MODEL_PATH = str(BASE_DIR / "gesture_model.joblib")      # ML模型文件路径
+ML_SCALER_PATH = str(BASE_DIR / "gesture_scaler.joblib")    # 特征标准化器路径
 ML_CONFIDENCE_THRESHOLD = 0.6               # 置信度低于此阈值返回NONE

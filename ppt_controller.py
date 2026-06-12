@@ -77,7 +77,12 @@ class PPTController:
             stable_gesture = self.gesture_classifier.get_stable_gesture(raw_gesture)
             self.current_gesture = raw_gesture  # Raw result for UI display
 
-            # 3. Execute action based on mode & gesture
+            # 鼠标移动是连续动作，不应等待每 N 帧一次的稳定确认。
+            if (self.mode == ControllerMode.MOUSE
+                    and raw_gesture == Gesture.POINT_INDEX):
+                self._handle_mouse_move(landmarks)
+
+            # 3. Execute discrete actions based on stable gestures
             if stable_gesture != Gesture.NONE:
                 self._handle_gesture(stable_gesture, hand_data)
 
@@ -92,6 +97,7 @@ class PPTController:
             # Reset mouse reference
             self._mouse_ref_x = None
             self._mouse_ref_y = None
+            self.action_controller.reset_mouse_smoothing()
 
         # 5. Render UI overlay
         frame = self._render_overlay(frame)
@@ -165,12 +171,8 @@ class PPTController:
                 self.status_message = "Exit Mouse Mode, Ready"
             return
 
-        # Mouse move: index pointing
-        if gesture == Gesture.POINT_INDEX:
-            self._handle_mouse_move(landmarks)
-
         # Mouse click: pinch
-        elif gesture == Gesture.PINCH:
+        if gesture == Gesture.PINCH:
             if self.gesture_classifier.should_trigger(
                     gesture, config.CLICK_COOLDOWN):
                 self.action_controller.mouse_click()

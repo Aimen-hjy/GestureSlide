@@ -42,7 +42,7 @@ class HandDetector:
         ("index",  INDEX_TIP,  INDEX_PIP,  INDEX_MCP),
         ("middle", MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP),
         ("ring",   RING_TIP,   RING_PIP,   RING_MCP),
-        ("pinky",  PINKY_TIP,  PINKY_DIP,  PINKY_MCP),
+        ("pinky",  PINKY_TIP,  PINKY_PIP,  PINKY_MCP),
     ]
 
     def __init__(self):
@@ -57,7 +57,7 @@ class HandDetector:
             min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE,
         )
 
-    def detect_hand(self, frame: np.ndarray) -> list | None:
+    def detect_hand(self, frame: np.ndarray) -> dict | None:
         """
         检测帧中的手部关键点
 
