@@ -1,8 +1,8 @@
 """Import local HaGRID/HaGRIDv2 images into GestureSlide training JSON.
 
-The script does not download data. Download/unzip HaGRID first so that you have:
-  hagrid_dataset/<gesture>/*.jpg
-  hagrid_annotations/<split>/<gesture>.json
+The script does not download data. It prefers annotation JSON files when
+available, but can also scan class image folders directly. The no-annotation
+fallback is useful when the upstream annotations link is temporarily forbidden.
 """
 
 from __future__ import annotations
@@ -79,17 +79,47 @@ def _annotation_user_id(meta: dict[str, Any], split: str, image_id: str) -> str:
     return str(value) if value is not None else f"unknown_user:{split}:{image_id[:2]}"
 
 
+def _class_dirs(dataset_root: Path, class_name: str) -> list[Path]:
+    """Return likely image directories for both official and manually-unzipped layouts."""
+    candidates = [
+        dataset_root / class_name,
+        dataset_root / "hagrid_dataset" / class_name,
+        dataset_root.parent / class_name,
+        dataset_root.parent / "hagrid_dataset" / class_name,
+    ]
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved not in seen and path.exists() and path.is_dir():
+            seen.add(resolved)
+            out.append(path)
+    return out
+
+
 def _find_image_path(dataset_root: Path, class_name: str, image_id: str) -> Path | None:
-    class_dir = dataset_root / class_name
-    candidate = class_dir / image_id
+    candidate = Path(image_id)
     if candidate.exists():
         return candidate
-    stem = Path(image_id).stem
-    for suffix in IMAGE_SUFFIXES:
-        candidate = class_dir / f"{stem}{suffix}"
-        if candidate.exists():
-            return candidate
+    stem = candidate.stem
+    for class_dir in _class_dirs(dataset_root, class_name):
+        direct = class_dir / image_id
+        if direct.exists():
+            return direct
+        for suffix in IMAGE_SUFFIXES:
+            maybe = class_dir / f"{stem}{suffix}"
+            if maybe.exists():
+                return maybe
     return None
+
+
+def _scan_class_images(dataset_root: Path, class_name: str) -> list[Path]:
+    images: list[Path] = []
+    for class_dir in _class_dirs(dataset_root, class_name):
+        for suffix in IMAGE_SUFFIXES:
+            images.extend(class_dir.rglob(f"*{suffix}"))
+            images.extend(class_dir.rglob(f"*{suffix.upper()}"))
+    return sorted(set(images))
 
 
 def _classify_point_direction(landmarks: list[dict[str, float]], min_length: float = 0.08) -> str | None:
@@ -120,7 +150,43 @@ def _make_hand_data(detector: HandDetector, frame):
     return hand_data
 
 
-def _import_split(detector: HandDetector, dataset_root: Path, annotations_root: Path,
+def _build_items(dataset_root: Path, annotations_root: Path | None, split: str,
+                 source_class: str, stats: Counter) -> list[tuple[Path, dict[str, Any]]]:
+    if annotations_root is not None:
+        annotation_path = annotations_root / split / f"{source_class}.json"
+        if annotation_path.exists():
+            items: list[tuple[Path, dict[str, Any]]] = []
+            for image_id, meta in _iter_annotation_items(_load_json(annotation_path)):
+                image_path = _find_image_path(dataset_root, source_class, image_id)
+                if image_path is None:
+                    stats[f"missing_image:{source_class}"] += 1
+                    continue
+                items.append((image_path, meta))
+            return items
+        stats[f"missing_annotation:{source_class}"] += 1
+
+    # Fallback: no annotations. Scan images and synthesize metadata. Grouping by
+    # image-path prefix is not as strong as real user_id, but it still lets the
+    # training pipeline run and keeps samples traceable.
+    paths = _scan_class_images(dataset_root, source_class)
+    items = []
+    for path in paths:
+        rel = str(path)
+        group_key = path.parent.name
+        items.append((path, {
+            "image_id": path.name,
+            "label": source_class,
+            "user_id": f"scan:{source_class}:{group_key}",
+            "file_name": rel,
+        }))
+    if paths:
+        stats[f"scanned_images:{source_class}"] += len(paths)
+    else:
+        stats[f"no_images_found:{source_class}"] += 1
+    return items
+
+
+def _import_split(detector: HandDetector, dataset_root: Path, annotations_root: Path | None,
                   split: str, targets: list[str], max_per_class: int | None,
                   include_direction_classes: bool, flip_horizontal: bool,
                   seed: int) -> tuple[list[dict[str, Any]], Counter]:
@@ -131,23 +197,14 @@ def _import_split(detector: HandDetector, dataset_root: Path, annotations_root: 
     for source_class in targets:
         if source_class in DIRECTION_CLASSES and not include_direction_classes:
             continue
-        annotation_path = annotations_root / split / f"{source_class}.json"
-        if not annotation_path.exists():
-            stats[f"missing_annotation:{source_class}"] += 1
-            continue
-
-        items = list(_iter_annotation_items(_load_json(annotation_path)))
+        items = _build_items(dataset_root, annotations_root, split, source_class, stats)
         rng.shuffle(items)
         accepted_for_source = 0
 
-        for image_id, meta in items:
+        for image_path, meta in items:
             if max_per_class is not None and accepted_for_source >= max_per_class:
                 break
             source_label = _annotation_class(meta, source_class)
-            image_path = _find_image_path(dataset_root, source_class, image_id)
-            if image_path is None:
-                stats[f"missing_image:{source_class}"] += 1
-                continue
             frame = cv2.imread(str(image_path))
             if frame is None:
                 stats[f"bad_image:{source_class}"] += 1
@@ -172,7 +229,7 @@ def _import_split(detector: HandDetector, dataset_root: Path, annotations_root: 
                     continue
 
             label_id = GESTURE_TO_ID[label_name]
-            user_id = _annotation_user_id(meta, split, image_id)
+            user_id = _annotation_user_id(meta, split, str(meta.get("image_id") or image_path.name))
             features = extract_features(hand_data)
             samples.append({
                 "features": features.tolist(),
@@ -183,7 +240,8 @@ def _import_split(detector: HandDetector, dataset_root: Path, annotations_root: 
                 "source_class": source_class,
                 "source_label": source_label,
                 "source_split": split,
-                "source_image": str(image_id),
+                "source_image": str(meta.get("image_id") or image_path.name),
+                "source_path": str(image_path),
                 "source_user_id": user_id,
                 "source_group": f"hagrid:{user_id}",
                 "flipped_horizontal": bool(flip_horizontal),
@@ -193,10 +251,18 @@ def _import_split(detector: HandDetector, dataset_root: Path, annotations_root: 
     return samples, stats
 
 
+def _has_any_annotations(annotations_root: Path | None, splits: list[str], targets: list[str]) -> bool:
+    if annotations_root is None or not annotations_root.exists():
+        return False
+    return any((annotations_root / split / f"{target}.json").exists()
+               for split in splits for target in targets)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Import HaGRID images into GestureSlide training JSON")
-    parser.add_argument("--dataset-root", required=True, help="Path to hagrid_dataset")
-    parser.add_argument("--annotations-root", required=True, help="Path to hagrid_annotations")
+    parser.add_argument("--dataset-root", required=True, help="Path to hagrid_dataset or the directory containing class folders")
+    parser.add_argument("--annotations-root", default=None,
+                        help="Optional path to hagrid_annotations. If missing, images are scanned directly.")
     parser.add_argument("--output-dir", default="training_data/imported")
     parser.add_argument("--splits", nargs="+", default=["train"])
     parser.add_argument("--targets", nargs="+", default=DEFAULT_TARGETS)
@@ -207,6 +273,13 @@ def main() -> int:
     parser.add_argument("--min-detection-confidence", type=float, default=0.6)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    annotations_root = Path(args.annotations_root) if args.annotations_root else None
+    splits = list(args.splits)
+    if not _has_any_annotations(annotations_root, splits, args.targets) and len(splits) > 1:
+        print("[warn] No annotation JSON files found. Scanning image folders once as split='all'.")
+        splits = ["all"]
+        annotations_root = None
 
     # The existing HandDetector constructor reads config.*. Override before creating it.
     config.STATIC_IMAGE_MODE = True
@@ -219,11 +292,11 @@ def main() -> int:
     try:
         all_stats = Counter()
         stamp = time.strftime("%Y%m%d_%H%M%S")
-        for split in args.splits:
+        for split in splits:
             samples, stats = _import_split(
                 detector=detector,
                 dataset_root=Path(args.dataset_root),
-                annotations_root=Path(args.annotations_root),
+                annotations_root=annotations_root,
                 split=split,
                 targets=args.targets,
                 max_per_class=args.max_per_class,
