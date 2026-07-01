@@ -6,3 +6,11 @@ __pycache__/
 .vscode/
 *.log
 .DS_Store
+
+# Large/local data and generated artifacts
+external/
+datasets/
+data_cache/
+*.joblib
+*.pkl
+*.pickle
