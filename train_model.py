@@ -2,9 +2,10 @@
 ML手势分类器训练脚本
 
 支持三种训练模式:
-  python train_model.py                         # 合成数据 (默认)
-  python train_model.py --real training_data/   # 真实/导入数据
-  python train_model.py --mix training_data/    # 真实 + 合成数据混合
+  python train_model.py                                  # 合成数据 (默认)
+  python train_model.py --real training_data/            # 真实/导入数据
+  python train_model.py --real training_data/ --augment  # 真实数据 + 轻量特征增强
+  python train_model.py --mix training_data/             # 真实 + 合成数据混合
 """
 
 import argparse
@@ -34,6 +35,12 @@ def main():
                         help=("Split strategy for --real mode. 'group' keeps "
                               "whole sessions/source users out of train set; "
                               "'random' is faster but optimistic. Default: group"))
+    parser.add_argument("--augment", action="store_true",
+                        help="Apply lightweight pose-preserving feature augmentation to the training split")
+    parser.add_argument("--augment-factor", type=int, default=1,
+                        help="Number of augmented variants per training sample when --augment is used")
+    parser.add_argument("--balance-target", type=int, default=0,
+                        help="Oversample weak classes up to this training count using augmentation; 0 disables")
     parser.add_argument("--output", type=str, default="gesture_model.joblib",
                         help="Output model path")
     parser.add_argument("--scaler", type=str, default="gesture_scaler.joblib",
@@ -61,6 +68,7 @@ def main():
         print("Mode: Real/imported data")
         print(f"  Data dir: {args.real}")
         print(f"  Split strategy: {args.split_strategy}")
+        print(f"  Augmentation: {'on' if args.augment else 'off'}")
         result = train_real_dataset(
             data_dir=args.real,
             test_size=args.test_size,
@@ -68,6 +76,9 @@ def main():
             scaler_path=args.scaler,
             seed=args.seed,
             split_strategy=args.split_strategy,
+            augment=args.augment,
+            augment_factor=args.augment_factor,
+            balance_target=args.balance_target,
         )
     else:
         print("Mode: Synthetic data")
