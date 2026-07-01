@@ -1,4 +1,4 @@
-"""Training data loading, audit, and leakage-aware training helpers."""
+"""Training data loading, audit, augmentation, and leakage-aware training helpers."""
 
 from __future__ import annotations
 
@@ -170,13 +170,7 @@ def _build_group_maps(dataset: TrainingDataset):
 
 
 def _group_split(dataset: TrainingDataset, test_size: float, seed: int):
-    """Class-aware group holdout split.
-
-    The first version used a purely random group split, which could leave many
-    classes out of the test set when each session contains only one gesture.
-    This heuristic first holds out at least one group for every class that has
-    2+ groups, while keeping classes with only one group in train.
-    """
+    """Class-aware group holdout split."""
     group_to_indices, group_to_labels, label_to_groups = _build_group_maps(dataset)
     all_groups = sorted(group_to_indices)
     if len(all_groups) < 2:
@@ -191,8 +185,6 @@ def _group_split(dataset: TrainingDataset, test_size: float, seed: int):
         return sum(1 for g in selected if label in group_to_labels[g])
 
     def can_add(group: str) -> bool:
-        # Never put the only group for a class into test; that class would have
-        # no training examples and model.fit would not learn it.
         for label in group_to_labels[group]:
             if len(label_to_groups[label]) - selected_count_for_label(label) <= 1:
                 return False
@@ -207,7 +199,6 @@ def _group_split(dataset: TrainingDataset, test_size: float, seed: int):
         names = ", ".join(ID_TO_GESTURE.get(label, str(label)) for label in sorted(single_group_labels))
         print(f"[warn] These classes have only one group and will be kept in train only: {names}")
 
-    # First pass: make the test set cover as many classes as possible.
     for label in sorted(eligible_labels, key=lambda x: len(label_to_groups[x])):
         if any(label in group_to_labels[g] for g in selected):
             continue
@@ -218,8 +209,6 @@ def _group_split(dataset: TrainingDataset, test_size: float, seed: int):
                                        group_size(g), rng.random()))
         selected.add(candidates[0])
 
-    # Second pass: fill toward the requested test size without removing any
-    # class entirely from train.
     while sum(group_size(g) for g in selected) < target_test_samples:
         candidates = [g for g in all_groups if g not in selected and can_add(g)]
         if not candidates:
@@ -242,6 +231,72 @@ def _group_split(dataset: TrainingDataset, test_size: float, seed: int):
     return train_idx, test_idx
 
 
+def _augment_one_feature(x: np.ndarray, rng: np.random.RandomState) -> np.ndarray:
+    """Apply small hand-pose-preserving perturbations to one 69-D sample."""
+    out = x.copy()
+    coords = out[:COORD_FEATURE_DIM].reshape(21, 3).copy()
+
+    angle = np.deg2rad(rng.uniform(-10.0, 10.0))
+    cos_a, sin_a = np.cos(angle), np.sin(angle)
+    rot = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+    scale = rng.uniform(0.90, 1.12)
+
+    coords[:, :2] = coords[:, :2] @ rot.T
+    coords *= scale
+    coords[:, :3] += rng.normal(0.0, 0.006, size=coords.shape)
+
+    out[:COORD_FEATURE_DIM] = coords.reshape(-1)
+    # Keep finger-state bits stable; only jitter pinch distance slightly.
+    out[68] = max(0.0, float(out[68] * scale + rng.normal(0.0, 0.008)))
+    return out
+
+
+def _augment_training_set(X: np.ndarray, y: np.ndarray,
+                          augment_factor: int, balance_target: int,
+                          seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """Augment only the training split to avoid leaking variants into test."""
+    if augment_factor <= 0 and balance_target <= 0:
+        return X, y
+
+    rng = np.random.RandomState(seed)
+    xs: list[np.ndarray] = [X]
+    ys: list[np.ndarray] = [y]
+
+    if augment_factor > 0:
+        augmented = []
+        augmented_y = []
+        for sample, label in zip(X, y):
+            for _ in range(augment_factor):
+                augmented.append(_augment_one_feature(sample, rng))
+                augmented_y.append(label)
+        if augmented:
+            xs.append(np.vstack(augmented))
+            ys.append(np.asarray(augmented_y, dtype=np.int32))
+
+    if balance_target > 0:
+        current_X = np.vstack(xs)
+        current_y = np.hstack(ys)
+        extra = []
+        extra_y = []
+        for label in sorted(set(int(v) for v in current_y)):
+            label_indices = np.where(current_y == label)[0]
+            need = balance_target - len(label_indices)
+            if need <= 0 or len(label_indices) == 0:
+                continue
+            for _ in range(need):
+                idx = int(rng.choice(label_indices))
+                extra.append(_augment_one_feature(current_X[idx], rng))
+                extra_y.append(label)
+        if extra:
+            xs.append(np.vstack(extra))
+            ys.append(np.asarray(extra_y, dtype=np.int32))
+
+    X_aug = np.vstack(xs).astype(np.float64)
+    y_aug = np.hstack(ys).astype(np.int32)
+    print(f"\nAugmentation: train samples {len(y)} → {len(y_aug)}")
+    return X_aug, y_aug
+
+
 def _print_class_counts(title: str, y: np.ndarray) -> None:
     counts = Counter(int(v) for v in y)
     print(title)
@@ -250,9 +305,6 @@ def _print_class_counts(title: str, y: np.ndarray) -> None:
 
 
 def _print_eval(y_test: np.ndarray, y_pred: np.ndarray, model: MLPClassifier) -> None:
-    # Report labels that are actually present in y_test or were predicted. This
-    # keeps absent classes from cluttering the report while still surfacing false
-    # positives for classes absent from the test split.
     labels = np.asarray(sorted(set(int(v) for v in y_test) | set(int(v) for v in y_pred)), dtype=np.int32)
     names = [ID_TO_GESTURE.get(int(label), str(label)) for label in labels]
     print("\nClassification Report:")
@@ -266,7 +318,10 @@ def train_real_dataset(data_dir: str | Path = "training_data",
                        model_path: str = "gesture_model.joblib",
                        scaler_path: str = "gesture_scaler.joblib",
                        seed: int = 42,
-                       split_strategy: str = "group") -> dict:
+                       split_strategy: str = "group",
+                       augment: bool = False,
+                       augment_factor: int = 1,
+                       balance_target: int = 0) -> dict:
     dataset = load_training_dataset(data_dir)
     print_dataset_audit(dataset)
 
@@ -281,17 +336,27 @@ def train_real_dataset(data_dir: str | Path = "training_data",
 
     X_train, X_test = dataset.X[train_idx], dataset.X[test_idx]
     y_train, y_test = dataset.y[train_idx], dataset.y[test_idx]
-    X_train_scaled, X_test_scaled, scaler = _scale(X_train, X_test)
 
     print(f"\nTrain samples: {len(train_idx)}  Test samples: {len(test_idx)}")
     print(f"Train groups: {len(set(dataset.groups[train_idx]))}  Test groups: {len(set(dataset.groups[test_idx]))}")
-    _print_class_counts("\nTrain class counts:", y_train)
+    _print_class_counts("\nTrain class counts before augmentation:", y_train)
     _print_class_counts("\nTest class counts:", y_test)
 
     missing_in_test = sorted(set(int(v) for v in dataset.y) - set(int(v) for v in y_test))
     if missing_in_test:
         names = ", ".join(ID_TO_GESTURE.get(label, str(label)) for label in missing_in_test)
         print(f"[warn] Test split does not contain: {names}")
+
+    if augment:
+        X_train, y_train = _augment_training_set(
+            X_train, y_train,
+            augment_factor=augment_factor,
+            balance_target=balance_target,
+            seed=seed,
+        )
+        _print_class_counts("\nTrain class counts after augmentation:", y_train)
+
+    X_train_scaled, X_test_scaled, scaler = _scale(X_train, X_test)
 
     print("\nTraining MLP (hidden: 128,64)...")
     model = MLPClassifier(hidden_layer_sizes=(128, 64), activation="relu", solver="adam",
@@ -310,4 +375,4 @@ def train_real_dataset(data_dir: str | Path = "training_data",
     print(f"Scaler saved to {scaler_path}")
     return {"accuracy": float(acc), "model_path": model_path,
             "scaler_path": scaler_path, "n_samples": dataset.n_samples,
-            "split_strategy": split_strategy}
+            "split_strategy": split_strategy, "augment": bool(augment)}
