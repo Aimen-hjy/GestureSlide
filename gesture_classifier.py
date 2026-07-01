@@ -42,11 +42,25 @@ class GestureClassifier:
         self._gesture_frame_count: dict[Gesture, int] = {}
         self._last_raw_gesture: Gesture = Gesture.NONE
 
+        # UI/演示用诊断信息
+        self.last_confidence: float = 0.0
+        self.last_model_gesture: Gesture = Gesture.NONE
+        self.last_backend: str = "rule"
+
         # ML模型
         self._ml_model = None
         self._ml_scaler = None
         self._ml_enabled = False
         self._load_ml_model()
+
+    @property
+    def ml_enabled(self) -> bool:
+        return self._ml_enabled
+
+    def _set_debug(self, confidence: float, model_gesture: Gesture, backend: str):
+        self.last_confidence = float(max(0.0, min(1.0, confidence)))
+        self.last_model_gesture = model_gesture
+        self.last_backend = backend
 
     def classify(self, hand_data: dict | None) -> Gesture:
         """
@@ -64,12 +78,13 @@ class GestureClassifier:
         if hand_data is None:
             self._gesture_frame_count.clear()
             self._last_raw_gesture = Gesture.NONE
+            self._set_debug(0.0, Gesture.NONE, "none")
             return Gesture.NONE
 
-        landmarks = hand_data["landmarks"]
         finger_states = hand_data.get("finger_states", [False] * 5)
 
         if len(finger_states) < 5:
+            self._set_debug(0.0, Gesture.NONE, "invalid")
             return Gesture.NONE
 
         thumb, index, middle, ring, pinky = finger_states
@@ -79,9 +94,11 @@ class GestureClassifier:
         if pinch_distance < config.PINCH_DISTANCE_THRESHOLD:
             # 拇指食捏合 + 其他手指弯曲 = PINCH (鼠标点击)
             if not middle and not ring and not pinky:
+                self._set_debug(1.0, Gesture.PINCH, "rule-pinch")
                 return Gesture.PINCH
             # 拇指食捏合 + 其他手指伸展 = OK_SIGN
             if middle and ring and pinky:
+                self._set_debug(1.0, Gesture.OK_SIGN, "rule-pinch")
                 return Gesture.OK_SIGN
 
         # 2. 按手指组合模式识别静态手势 (ML或规则)
@@ -89,6 +106,8 @@ class GestureClassifier:
             gesture = self._classify_ml(hand_data)
         else:
             gesture = self._classify_static(thumb, index, middle, ring, pinky)
+            self._set_debug(1.0 if gesture != Gesture.NONE else 0.0,
+                            gesture, "rule")
 
         return gesture
 
@@ -144,7 +163,6 @@ class GestureClassifier:
                     "using rule-based fallback"
                 )
                 return
-
             self._ml_model = joblib.load(model_path)
             self._ml_scaler = joblib.load(scaler_path)
 
@@ -154,12 +172,14 @@ class GestureClassifier:
                 raise ValueError("Scaler feature dimension is not 63")
 
             self._ml_enabled = True
+            self.last_backend = "ml"
             logging.info(f"ML model loaded from {model_path}")
         except Exception as e:
             logging.warning(f"Failed to load ML model: {e}, "
                             f"using rule-based fallback")
             self._ml_model = None
             self._ml_enabled = False
+            self.last_backend = "rule"
 
     def _classify_ml(self, hand_data: dict) -> Gesture:
         """使用ML模型分类静态手势. 置信度不足时返回NONE"""
@@ -176,17 +196,20 @@ class GestureClassifier:
         max_idx = int(np.argmax(probas))
         max_prob = float(probas[max_idx])
 
-        if max_prob < config.ML_CONFIDENCE_THRESHOLD:
-            return Gesture.NONE
-
         # predict_proba 的列序号不一定等于真实类别 ID。
         # 真实数据未包含 NONE 时，classes_ 通常为 [1, ..., 10]。
         class_id = int(self._ml_model.classes_[max_idx])
         gesture_name = ID_TO_GESTURE.get(class_id, "NONE")
         try:
-            return Gesture[gesture_name]
+            predicted = Gesture[gesture_name]
         except KeyError:
+            predicted = Gesture.NONE
+
+        self._set_debug(max_prob, predicted, "ml")
+
+        if max_prob < config.ML_CONFIDENCE_THRESHOLD:
             return Gesture.NONE
+        return predicted
 
     def should_trigger(self, gesture: Gesture,
                        cooldown: float | None = None) -> bool:
