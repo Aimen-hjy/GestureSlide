@@ -40,12 +40,14 @@ FONT_FACE = 0               # OpenCV 字体 (FONT_HERSHEY_SIMPLEX)
 FONT_SCALE = 0.7            # 字体大小
 FONT_THICKNESS = 2          # 字体粗细
 OVERLAY_ALPHA = 0.6         # 叠加层透明度
-STATUS_BAR_HEIGHT = 80      # 底部状态栏高度
+STATUS_BAR_HEIGHT = 110     # 底部状态栏高度
+SHOW_DEMO_PANEL = True      # 顶部展示面板：项目名/动作提示/置信度
 COLOR_PRIMARY = (0, 255, 0)       # 主色调 (绿色)
 COLOR_SECONDARY = (255, 255, 0)   # 次要色 (青色)
 COLOR_WARNING = (0, 0, 255)       # 警告色 (红色)
 COLOR_TEXT = (255, 255, 255)      # 文字颜色 (白色)
 COLOR_BG = (30, 30, 30)           # 背景色 (深灰)
+COLOR_DIM = (120, 120, 120)       # 次要文字/低置信度颜色
 
 # ================== ML模型设置 ==================
 ML_MODEL_PATH = str(BASE_DIR / "gesture_model.joblib")      # ML模型文件路径
