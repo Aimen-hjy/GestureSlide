@@ -39,6 +39,8 @@ class PPTController:
         # State info (for UI rendering)
         self.current_gesture: Gesture = Gesture.NONE
         self.current_finger_states: list[bool] = [False] * 5
+        self.current_confidence: float = 0.0
+        self.current_backend: str = "rule"
         self.status_message: str = "Ready"
         self.fps: float = 0.0
         self._fps_times: list[float] = []
@@ -78,6 +80,8 @@ class PPTController:
             # 2. Gesture classification
             raw_gesture = self.gesture_classifier.classify(hand_data)
             self.current_gesture = raw_gesture  # Raw result for UI display
+            self.current_confidence = self.gesture_classifier.last_confidence
+            self.current_backend = self.gesture_classifier.last_backend
 
             # ── Volume rapid-press (raw gesture, avoids stabilizer gap) ──
             VOLUME_INTERVAL = 5  # press every N frames (~6/sec at 30fps)
@@ -118,6 +122,8 @@ class PPTController:
         else:
             # No hand detected
             self.current_gesture = Gesture.NONE
+            self.current_confidence = 0.0
+            self.current_backend = "none"
             self.current_finger_states = [False] * 5
             # Reset gesture stabilizer
             self.gesture_classifier.get_stable_gesture(Gesture.NONE)
@@ -256,17 +262,70 @@ class PPTController:
             duration = self._fps_times[-1] - self._fps_times[0]
             self.fps = (len(self._fps_times) - 1) / duration if duration > 0 else 0
 
+    def _action_hint(self) -> str:
+        """Human-readable next action for the demo overlay."""
+        if self.mode == ControllerMode.MOUSE:
+            mapping = {
+                Gesture.POINT_INDEX: "Move cursor",
+                Gesture.PINCH: "Click",
+                Gesture.OPEN_PALM: "Exit mouse mode",
+            }
+            return mapping.get(self.current_gesture, "Mouse mode: index move, pinch click")
+
+        mapping = {
+            Gesture.LEFT_POINT: "Previous slide",
+            Gesture.RIGHT_POINT: "Next slide",
+            Gesture.OPEN_PALM: "Exit slideshow",
+            Gesture.POINT_INDEX: "Enter mouse mode",
+            Gesture.OK_SIGN: "Start slideshow",
+            Gesture.THUMB_UP: "Start slideshow",
+            Gesture.PEACE_UP: "Volume up",
+            Gesture.PEACE_DOWN: "Volume down",
+            Gesture.FIST: "Recognized, no action mapped",
+            Gesture.DOWN_POINT: "Recognized, no action mapped",
+            Gesture.THREE_FINGERS: "Recognized, no action mapped",
+        }
+        return mapping.get(self.current_gesture, "Hold a gesture steady to trigger")
+
+    def _render_demo_panel(self, overlay: np.ndarray):
+        if not getattr(config, "SHOW_DEMO_PANEL", True):
+            return
+        x, y, w, h = 10, 10, 350, 92
+        cv2.rectangle(overlay, (x, y), (x + w, y + h), config.COLOR_BG, -1)
+        cv2.rectangle(overlay, (x, y), (x + w, y + h), config.COLOR_PRIMARY, 1)
+        cv2.putText(overlay, "GestureSlide", (x + 12, y + 25),
+                    config.FONT_FACE, 0.7, config.COLOR_PRIMARY, 2)
+        cv2.putText(overlay, "MediaPipe Hands + MLP Classifier", (x + 12, y + 48),
+                    config.FONT_FACE, 0.48, config.COLOR_TEXT, 1)
+        cv2.putText(overlay, f"Action: {self._action_hint()}", (x + 12, y + 72),
+                    config.FONT_FACE, 0.48, config.COLOR_SECONDARY, 1)
+
+    def _render_confidence_bar(self, overlay: np.ndarray, x: int, y: int, width: int):
+        conf = max(0.0, min(1.0, self.current_confidence))
+        bar_h = 10
+        cv2.rectangle(overlay, (x, y), (x + width, y + bar_h), config.COLOR_DIM, 1)
+        fill_w = int(width * conf)
+        color = config.COLOR_PRIMARY if conf >= config.ML_CONFIDENCE_THRESHOLD else config.COLOR_WARNING
+        if fill_w > 0:
+            cv2.rectangle(overlay, (x + 1, y + 1), (x + fill_w, y + bar_h - 1), color, -1)
+        cv2.putText(overlay, f"conf {conf:.2f} | {self.current_backend}",
+                    (x + width + 10, y + 10), config.FONT_FACE, 0.45,
+                    config.COLOR_TEXT, 1)
+
     def _render_overlay(self, frame: np.ndarray) -> np.ndarray:
         """
         Render UI info overlay on frame
 
         Includes:
         - Bottom status bar (mode / gesture / FPS)
+        - Confidence bar + action preview
         - Mouse mode crosshair
         - Finger state indicators
         """
         h, w = frame.shape[:2]
         overlay = frame.copy()
+
+        self._render_demo_panel(overlay)
 
         # ── Bottom status bar ──
         bar_y = h - config.STATUS_BAR_HEIGHT
@@ -281,15 +340,24 @@ class PPTController:
 
         # Line 1: Mode + Gesture
         line1 = f"Mode: {mode_text}  |  Gesture: {gesture_name}"
-        cv2.putText(overlay, line1, (10, bar_y + 28),
+        cv2.putText(overlay, line1, (10, bar_y + 26),
                     config.FONT_FACE, config.FONT_SCALE,
                     config.COLOR_PRIMARY, config.FONT_THICKNESS)
 
+        # Confidence bar
+        self._render_confidence_bar(overlay, 10, bar_y + 40, 170)
+
         # Line 2: FPS + Status
         line2 = f"FPS: {self.fps:.1f}  |  {self.status_message}"
-        cv2.putText(overlay, line2, (10, bar_y + 58),
+        cv2.putText(overlay, line2, (10, bar_y + 72),
                     config.FONT_FACE, 0.55,
                     config.COLOR_TEXT, 1)
+
+        # Line 3: Action hint
+        line3 = f"Next action: {self._action_hint()}"
+        cv2.putText(overlay, line3, (10, bar_y + 98),
+                    config.FONT_FACE, 0.52,
+                    config.COLOR_SECONDARY, 1)
 
         # ── Finger state indicators ──
         finger_names = ["T", "I", "M", "R", "P"]  # Thumb, Index, Middle, Ring, Pinky
