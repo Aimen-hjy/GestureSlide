@@ -7,11 +7,15 @@
 #
 # Optional environment variables:
 #   SAVE_ROOT=datasets/hagrid
+#   HAGRID_REPO=external/hagrid
 #   TARGETS="fist palm stop like peace peace_inverted three no_gesture"
 #   SPLITS="train val"
 #   MAX_PER_CLASS=2000
 #   INCLUDE_DIRECTION=0   # set to 1 to include point/one direction auto-labeling
 #   TRAINING_OUT=training_data/imported
+#
+# Note: MAX_PER_CLASS limits how many already-downloaded images are imported.
+# The official downloader still downloads each requested class archive.
 
 set -euo pipefail
 
@@ -31,7 +35,11 @@ else
   git -C "${HAGRID_REPO}" pull --ff-only
 fi
 
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+if [[ -f "${HAGRID_REPO}/requirements.txt" ]]; then
+  python -m pip install -r "${HAGRID_REPO}/requirements.txt"
+fi
 
 # The official downloader supports --annotations, --dataset and --targets.
 # Dataset archives are large; make sure you have enough disk space before this step.
