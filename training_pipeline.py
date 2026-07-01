@@ -10,7 +10,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.model_selection import GroupShuffleSplit, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 
@@ -156,27 +156,104 @@ def _random_split(dataset: TrainingDataset, test_size: float, seed: int):
                             stratify=stratify, random_state=seed)
 
 
+def _build_group_maps(dataset: TrainingDataset):
+    group_to_indices: dict[str, list[int]] = defaultdict(list)
+    group_to_labels: dict[str, set[int]] = defaultdict(set)
+    label_to_groups: dict[int, set[str]] = defaultdict(set)
+    for idx, (label, group) in enumerate(zip(dataset.y, dataset.groups)):
+        label_id = int(label)
+        group_name = str(group)
+        group_to_indices[group_name].append(idx)
+        group_to_labels[group_name].add(label_id)
+        label_to_groups[label_id].add(group_name)
+    return group_to_indices, group_to_labels, label_to_groups
+
+
 def _group_split(dataset: TrainingDataset, test_size: float, seed: int):
-    if len(set(dataset.groups)) < 2:
+    """Class-aware group holdout split.
+
+    The first version used a purely random group split, which could leave many
+    classes out of the test set when each session contains only one gesture.
+    This heuristic first holds out at least one group for every class that has
+    2+ groups, while keeping classes with only one group in train.
+    """
+    group_to_indices, group_to_labels, label_to_groups = _build_group_maps(dataset)
+    all_groups = sorted(group_to_indices)
+    if len(all_groups) < 2:
         print("[warn] Fewer than 2 groups; falling back to random split")
         return _random_split(dataset, test_size, seed)
 
-    all_classes = set(int(v) for v in np.unique(dataset.y))
-    first = None
-    for offset in range(50):
-        splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=seed + offset)
-        train_idx, test_idx = next(splitter.split(dataset.X, dataset.y, groups=dataset.groups))
-        if first is None:
-            first = (train_idx, test_idx)
-        if (set(int(v) for v in dataset.y[train_idx]) == all_classes and
-                set(int(v) for v in dataset.y[test_idx]) == all_classes):
-            return train_idx, test_idx
-    print("[warn] Could not find a group split with every class in both train/test; using first split")
-    return first
+    rng = np.random.RandomState(seed)
+    target_test_samples = max(1, int(round(dataset.n_samples * test_size)))
+    selected: set[str] = set()
+
+    def selected_count_for_label(label: int) -> int:
+        return sum(1 for g in selected if label in group_to_labels[g])
+
+    def can_add(group: str) -> bool:
+        # Never put the only group for a class into test; that class would have
+        # no training examples and model.fit would not learn it.
+        for label in group_to_labels[group]:
+            if len(label_to_groups[label]) - selected_count_for_label(label) <= 1:
+                return False
+        return True
+
+    def group_size(group: str) -> int:
+        return len(group_to_indices[group])
+
+    eligible_labels = [label for label, groups in label_to_groups.items() if len(groups) >= 2]
+    single_group_labels = [label for label, groups in label_to_groups.items() if len(groups) < 2]
+    if single_group_labels:
+        names = ", ".join(ID_TO_GESTURE.get(label, str(label)) for label in sorted(single_group_labels))
+        print(f"[warn] These classes have only one group and will be kept in train only: {names}")
+
+    # First pass: make the test set cover as many classes as possible.
+    for label in sorted(eligible_labels, key=lambda x: len(label_to_groups[x])):
+        if any(label in group_to_labels[g] for g in selected):
+            continue
+        candidates = [g for g in label_to_groups[label] if g not in selected and can_add(g)]
+        if not candidates:
+            continue
+        candidates.sort(key=lambda g: (abs((sum(group_size(x) for x in selected) + group_size(g)) - target_test_samples),
+                                       group_size(g), rng.random()))
+        selected.add(candidates[0])
+
+    # Second pass: fill toward the requested test size without removing any
+    # class entirely from train.
+    while sum(group_size(g) for g in selected) < target_test_samples:
+        candidates = [g for g in all_groups if g not in selected and can_add(g)]
+        if not candidates:
+            break
+        current = sum(group_size(g) for g in selected)
+        candidates.sort(key=lambda g: (abs((current + group_size(g)) - target_test_samples),
+                                       group_size(g), rng.random()))
+        selected.add(candidates[0])
+
+    if not selected:
+        print("[warn] Could not build a safe group split; falling back to random split")
+        return _random_split(dataset, test_size, seed)
+
+    test_idx = np.array(sorted(i for g in selected for i in group_to_indices[g]), dtype=np.int64)
+    train_idx = np.array(sorted(set(range(dataset.n_samples)) - set(test_idx.tolist())), dtype=np.int64)
+
+    if len(train_idx) == 0 or len(test_idx) == 0:
+        print("[warn] Empty train/test split; falling back to random split")
+        return _random_split(dataset, test_size, seed)
+    return train_idx, test_idx
+
+
+def _print_class_counts(title: str, y: np.ndarray) -> None:
+    counts = Counter(int(v) for v in y)
+    print(title)
+    for label in sorted(counts):
+        print(f"  {ID_TO_GESTURE.get(label, str(label)):<14} {counts[label]:>6}")
 
 
 def _print_eval(y_test: np.ndarray, y_pred: np.ndarray, model: MLPClassifier) -> None:
-    labels = np.asarray(model.classes_, dtype=np.int32)
+    # Report labels that are actually present in y_test or were predicted. This
+    # keeps absent classes from cluttering the report while still surfacing false
+    # positives for classes absent from the test split.
+    labels = np.asarray(sorted(set(int(v) for v in y_test) | set(int(v) for v in y_pred)), dtype=np.int32)
     names = [ID_TO_GESTURE.get(int(label), str(label)) for label in labels]
     print("\nClassification Report:")
     print(classification_report(y_test, y_pred, labels=labels, target_names=names, zero_division=0))
@@ -194,7 +271,7 @@ def train_real_dataset(data_dir: str | Path = "training_data",
     print_dataset_audit(dataset)
 
     if split_strategy == "group":
-        print("\nSplit strategy: group holdout (recommended)")
+        print("\nSplit strategy: class-aware group holdout (recommended)")
         train_idx, test_idx = _group_split(dataset, test_size, seed)
     elif split_strategy == "random":
         print("\nSplit strategy: random frame split (optimistic)")
@@ -208,6 +285,13 @@ def train_real_dataset(data_dir: str | Path = "training_data",
 
     print(f"\nTrain samples: {len(train_idx)}  Test samples: {len(test_idx)}")
     print(f"Train groups: {len(set(dataset.groups[train_idx]))}  Test groups: {len(set(dataset.groups[test_idx]))}")
+    _print_class_counts("\nTrain class counts:", y_train)
+    _print_class_counts("\nTest class counts:", y_test)
+
+    missing_in_test = sorted(set(int(v) for v in dataset.y) - set(int(v) for v in y_test))
+    if missing_in_test:
+        names = ", ".join(ID_TO_GESTURE.get(label, str(label)) for label in missing_in_test)
+        print(f"[warn] Test split does not contain: {names}")
 
     print("\nTraining MLP (hidden: 128,64)...")
     model = MLPClassifier(hidden_layer_sizes=(128, 64), activation="relu", solver="adam",
