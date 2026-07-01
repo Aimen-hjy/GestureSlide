@@ -14,6 +14,8 @@
 #   INCLUDE_DIRECTION=0   # set to 1 to include point/one direction auto-labeling
 #   TRAINING_OUT=training_data/imported
 #   DOWNLOAD_ANNOTATIONS=0 # set to 1 if the upstream annotation URL is accessible
+#   INSTALL_HAGRID_REQUIREMENTS=0 # HaGRID full reqs install torch/CUDA; usually unnecessary here
+#   SKIP_DOWNLOAD=0       # set to 1 to import/train from already-downloaded folders only
 #
 # Note: MAX_PER_CLASS limits how many already-downloaded images are imported.
 # The official downloader still downloads each requested class archive.
@@ -28,6 +30,8 @@ MAX_PER_CLASS="${MAX_PER_CLASS:-2000}"
 INCLUDE_DIRECTION="${INCLUDE_DIRECTION:-0}"
 TRAINING_OUT="${TRAINING_OUT:-training_data/imported}"
 DOWNLOAD_ANNOTATIONS="${DOWNLOAD_ANNOTATIONS:-0}"
+INSTALL_HAGRID_REQUIREMENTS="${INSTALL_HAGRID_REQUIREMENTS:-0}"
+SKIP_DOWNLOAD="${SKIP_DOWNLOAD:-0}"
 
 mkdir -p external datasets "${SAVE_ROOT}" "${TRAINING_OUT}"
 
@@ -39,20 +43,26 @@ fi
 
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-if [[ -f "${HAGRID_REPO}/requirements.txt" ]]; then
+
+# Do not install the official HaGRID full requirements by default: they pull in
+# torch/CUDA/onnx and are useful for HaGRID model training, but not needed for
+# this project's MediaPipe feature extraction and MLP training.
+if [[ "${INSTALL_HAGRID_REQUIREMENTS}" == "1" && -f "${HAGRID_REPO}/requirements.txt" ]]; then
   python -m pip install -r "${HAGRID_REPO}/requirements.txt"
 fi
 
-# The upstream annotations URL may return 403. Import can work without it by
-# scanning class image folders directly, so annotations are opt-in.
-if [[ "${DOWNLOAD_ANNOTATIONS}" == "1" ]]; then
-  python "${HAGRID_REPO}/download.py" --save_path "${SAVE_ROOT}" --annotations || \
-    echo "[warn] Annotation download failed; continuing with image-folder scan."
-fi
+if [[ "${SKIP_DOWNLOAD}" != "1" ]]; then
+  # The upstream annotations URL may return 403. Import can work without it by
+  # scanning class image folders directly, so annotations are opt-in.
+  if [[ "${DOWNLOAD_ANNOTATIONS}" == "1" ]]; then
+    python "${HAGRID_REPO}/download.py" --save_path "${SAVE_ROOT}" --annotations || \
+      echo "[warn] Annotation download failed; continuing with image-folder scan."
+  fi
 
-# The official downloader supports --dataset and --targets.
-# Dataset archives are large; make sure you have enough disk space before this step.
-python "${HAGRID_REPO}/download.py" --save_path "${SAVE_ROOT}" --dataset --targets ${TARGETS}
+  # The official downloader supports --dataset and --targets.
+  # Dataset archives are large; make sure you have enough disk space before this step.
+  python "${HAGRID_REPO}/download.py" --save_path "${SAVE_ROOT}" --dataset --targets ${TARGETS}
+fi
 
 # Unzip archives if any were downloaded. -n avoids overwriting already extracted files.
 find "${SAVE_ROOT}" -type f -name "*.zip" -print0 | while IFS= read -r -d '' archive; do
