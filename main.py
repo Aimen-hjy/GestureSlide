@@ -1,13 +1,13 @@
 """
-基于MediaPipe的无接触手势PPT控制系统 - 主程序入口
+基于 MediaPipe 的无接触手势 PPT 控制系统 - 主程序入口
 
 使用方法:
-  python main.py                         # 正常运行
-  python main.py --collect               # 数据采集模式 (训练用)
-  python main.py --ppt demo.pptx --start # 打开PPT并自动开始放映
-  python main.py --headless --hud        # 正式演示：只显示悬浮识别HUD
+  python main.py                         # 调试运行，显示摄像头预览
+  python main.py --collect               # 数据采集模式
+  python main.py --headless --hud        # 正式演示：只显示悬浮识别 HUD
+  python main.py --ppt demo.pptx --start --headless --hud
 
-按 'q' 键退出程序；headless 模式下使用 Ctrl+C 退出。
+按 'q' 键退出预览窗口；headless 模式下使用 Ctrl+C 退出。
 """
 
 import sys
@@ -93,28 +93,24 @@ def open_ppt_file(path: str):
 def print_instructions():
     """打印操作说明。"""
     print("=" * 60)
-    print("  基于MediaPipe的无接触手势PPT控制系统")
+    print("  基于 MediaPipe 的无接触手势 PPT 控制系统")
     print("=" * 60)
     print()
     print("  📷 请确保摄像头已连接")
-    print("  🪟 可用 --hud 显示悬浮识别状态，不必显示完整摄像头画面")
+    print("  🪟 推荐正式演示使用: python main.py --headless --hud")
     print()
-    print("  普通模式:")
-    print("    👈  食指左指       →  上一页")
-    print("    👉  食指右指       →  下一页")
-    print("    🖐  五指张开       →  退出放映 (Esc)")
-    print("    👌  OK手势         →  开始放映 (F5)")
-    print("    ☝️  食指朝上       →  进入鼠标模式")
-    print("    ✌️  V手势朝上       →  音量增大")
-    print("    ✌️  V手势朝下       →  音量减小")
-    print("    👍  竖拇指         →  开始放映")
+    print("  核心 PPT 控制:")
+    print("    👌  OK手势 / 👍 竖拇指  →  开始放映 (F5)")
+    print("    👈  食指左指             →  上一页")
+    print("    👉  食指右指             →  下一页")
+    print("    🖐  五指张开             →  退出放映 (Esc)")
     print()
-    print("  鼠标模式:")
-    print("    ☝️  移动食指       →  移动光标")
-    print("    🤏  拇指食指捏合   →  鼠标点击")
-    print("    🖐  五指张开       →  退出鼠标模式")
+    print("  可选功能:")
+    print("    ☝️  食指朝上             →  进入鼠标模式")
+    print("    🤏  拇指食指捏合         →  鼠标点击")
+    print("    ✌️  V手势朝上/朝下       →  音量增大/减小")
     print()
-    print("  调试: 按 'q' 退出；headless 模式下用 Ctrl+C 退出")
+    print("  调试: 预览窗口按 'q' 退出；headless 模式下用 Ctrl+C 退出")
     print("-" * 60)
 
 
