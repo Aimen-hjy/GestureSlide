@@ -31,11 +31,11 @@ GESTURE_COOLDOWN = 1.2      # 通用手势冷却时间 (秒)
 GESTURE_HOLD_FRAMES = 5     # 手势需持续帧数才触发
 
 # ================== 演示安全门控 ==================
-# True 时，程序仍然持续识别手势，但只有在 OK/竖拇指激活后的短时间内才执行翻页等动作。
-# 这能显著降低自然手势或 NONE 误判带来的误触发。
-COMMAND_GATE_ENABLED = True
-COMMAND_GATE_TIMEOUT = 5.0        # OK/竖拇指激活后允许执行命令的秒数
-COMMAND_GATE_EXTEND_ON_ACTION = True  # 成功执行一次动作后刷新激活窗口
+# 默认关闭：保持原始“识别到稳定手势即执行”的交互逻辑。
+# 如需降低误触发，可临时改成 True。
+COMMAND_GATE_ENABLED = False
+COMMAND_GATE_TIMEOUT = 5.0
+COMMAND_GATE_EXTEND_ON_ACTION = True
 
 # ================== 鼠标控制设置 ==================
 MOUSE_SMOOTHING = 0.6       # 鼠标移动平滑系数 (0-1, 越小越平滑)
