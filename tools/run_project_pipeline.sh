@@ -13,6 +13,7 @@
 #
 # Optional:
 #   USE_HAGRID_NONE=1 bash tools/run_project_pipeline.sh
+#   HAGRID_SKIP_DOWNLOAD=1 USE_HAGRID_NONE=1 bash tools/run_project_pipeline.sh
 #   USE_RPS=1 bash tools/run_project_pipeline.sh
 #   BALANCE_TARGET=800 AUGMENT_FACTOR=2 bash tools/run_project_pipeline.sh
 #   CLEAN_RPS=0 USE_RPS=1 bash tools/run_project_pipeline.sh
@@ -26,6 +27,7 @@ set -euo pipefail
 
 USE_RPS="${USE_RPS:-0}"
 USE_HAGRID_NONE="${USE_HAGRID_NONE:-0}"
+HAGRID_SKIP_DOWNLOAD="${HAGRID_SKIP_DOWNLOAD:-0}"
 CLEAN_RPS="${CLEAN_RPS:-1}"
 CLEAN_HAGRID="${CLEAN_HAGRID:-1}"
 RPS_ROOT="${RPS_ROOT:-datasets/rps}"
@@ -63,14 +65,18 @@ fi
 python tools/audit_training_data.py training_data/
 
 if [[ "${USE_HAGRID_NONE}" == "1" ]]; then
-  if [[ ! -d "${HAGRID_REPO}/.git" ]]; then
-    git clone https://github.com/hukenovs/hagrid.git "${HAGRID_REPO}"
-  else
-    git -C "${HAGRID_REPO}" pull --ff-only
-  fi
+  if [[ "${HAGRID_SKIP_DOWNLOAD}" != "1" ]]; then
+    if [[ ! -d "${HAGRID_REPO}/.git" ]]; then
+      git clone https://github.com/hukenovs/hagrid.git "${HAGRID_REPO}"
+    else
+      git -C "${HAGRID_REPO}" pull --ff-only
+    fi
 
-  # Download only the lightweight no_gesture archive (~493.9 MB), not 40GB gesture classes.
-  python "${HAGRID_REPO}/download.py" --save_path "${HAGRID_ROOT}" --dataset --targets no_gesture
+    # Download only the lightweight no_gesture archive (~493.9 MB), not 40GB gesture classes.
+    python "${HAGRID_REPO}/download.py" --save_path "${HAGRID_ROOT}" --dataset --targets no_gesture
+  else
+    echo "[info] HAGRID_SKIP_DOWNLOAD=1: using existing files under ${HAGRID_ROOT}"
+  fi
 
   find "${HAGRID_ROOT}" -type f -name "*.zip" -print0 | while IFS= read -r -d '' archive; do
     unzip -n "${archive}" -d "${HAGRID_ROOT}"
