@@ -2,11 +2,14 @@
 
 This script keeps the project lightweight: all models consume the same 69-D
 MediaPipe feature vector, so it is suitable for a classroom PPT-control demo.
+It also writes per-class metrics and a confusion matrix for data-driven
+collection decisions.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 import time
@@ -16,7 +19,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
@@ -25,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from gesture_model import ID_TO_GESTURE  # noqa: E402
 from training_pipeline import (  # noqa: E402
     _augment_training_set,
     _group_split,
@@ -44,6 +48,10 @@ class ModelResult:
     train_seconds: float
     n_train: int
     n_test: int
+
+
+def _label_name(label: int) -> str:
+    return ID_TO_GESTURE.get(int(label), str(label))
 
 
 def build_model(name: str, seed: int):
@@ -91,12 +99,12 @@ def build_model(name: str, seed: int):
     raise ValueError(f"Unknown model: {name}")
 
 
-def evaluate_model(name: str, model, X_train, y_train, X_test, y_test) -> ModelResult:
+def evaluate_model(name: str, model, X_train, y_train, X_test, y_test) -> tuple[ModelResult, np.ndarray]:
     started = time.perf_counter()
     model.fit(X_train, y_train)
     train_seconds = time.perf_counter() - started
     pred = model.predict(X_test)
-    return ModelResult(
+    result = ModelResult(
         name=name,
         accuracy=float(accuracy_score(y_test, pred)),
         macro_f1=float(f1_score(y_test, pred, average="macro", zero_division=0)),
@@ -105,6 +113,51 @@ def evaluate_model(name: str, model, X_train, y_train, X_test, y_test) -> ModelR
         n_train=int(len(y_train)),
         n_test=int(len(y_test)),
     )
+    return result, pred
+
+
+def per_class_report_dict(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, dict[str, float]]:
+    labels = sorted(set(map(int, y_true)) | set(map(int, y_pred)))
+    names = [_label_name(label) for label in labels]
+    return classification_report(
+        y_true,
+        y_pred,
+        labels=labels,
+        target_names=names,
+        output_dict=True,
+        zero_division=0,
+    )
+
+
+def write_class_metrics_csv(path: Path, reports: dict[str, dict]) -> None:
+    rows = []
+    for model_name, report in reports.items():
+        for class_name, metrics in report.items():
+            if not isinstance(metrics, dict) or class_name in {"accuracy", "macro avg", "weighted avg"}:
+                continue
+            rows.append({
+                "model": model_name,
+                "class": class_name,
+                "precision": metrics.get("precision", 0.0),
+                "recall": metrics.get("recall", 0.0),
+                "f1_score": metrics.get("f1-score", 0.0),
+                "support": metrics.get("support", 0),
+            })
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["model", "class", "precision", "recall", "f1_score", "support"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_confusion_csv(path: Path, y_true: np.ndarray, y_pred: np.ndarray) -> None:
+    labels = sorted(set(map(int, y_true)) | set(map(int, y_pred)))
+    names = [_label_name(label) for label in labels]
+    matrix = confusion_matrix(y_true, y_pred, labels=labels)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["true\\pred", *names])
+        for name, row in zip(names, matrix):
+            writer.writerow([name, *map(int, row)])
 
 
 def print_results(results: list[ModelResult]) -> None:
@@ -114,6 +167,20 @@ def print_results(results: list[ModelResult]) -> None:
     print("-" * 78)
     for r in sorted(results, key=lambda x: (x.macro_f1, x.accuracy), reverse=True):
         print(f"{r.name:<16} {r.accuracy:>10.4f} {r.macro_f1:>10.4f} {r.weighted_f1:>12.4f} {r.train_seconds:>10.2f}")
+
+
+def print_low_class_scores(report: dict, max_rows: int = 5) -> None:
+    class_rows = []
+    for class_name, metrics in report.items():
+        if isinstance(metrics, dict) and class_name not in {"macro avg", "weighted avg"}:
+            class_rows.append((class_name, float(metrics.get("f1-score", 0.0)), int(metrics.get("support", 0))))
+    class_rows.sort(key=lambda x: (x[1], x[2]))
+    print("\nLowest-F1 classes for the best model")
+    print("=" * 52)
+    print(f"{'class':<18} {'f1':>8} {'support':>10}")
+    print("-" * 52)
+    for class_name, f1, support in class_rows[:max_rows]:
+        print(f"{class_name:<18} {f1:>8.4f} {support:>10}")
 
 
 def main() -> int:
@@ -159,17 +226,22 @@ def main() -> int:
 
     results: list[ModelResult] = []
     trained_models = {}
+    predictions = {}
+    class_reports = {}
     for name in args.models:
         print(f"\nTraining {name}...")
         model = build_model(name, args.seed)
-        result = evaluate_model(name, model, X_train_scaled, y_train, X_test_scaled, y_test)
+        result, pred = evaluate_model(name, model, X_train_scaled, y_train, X_test_scaled, y_test)
         results.append(result)
         trained_models[name] = model
+        predictions[name] = pred
+        class_reports[name] = per_class_report_dict(y_test, pred)
         print(f"  accuracy={result.accuracy:.4f}, macro_f1={result.macro_f1:.4f}, train={result.train_seconds:.2f}s")
 
     print_results(results)
     best = max(results, key=lambda r: (getattr(r, args.metric), r.accuracy))
     best_model = trained_models[best.name]
+    best_pred = predictions[best.name]
 
     joblib.dump(best_model, args.output)
     joblib.dump(scaler, args.scaler)
@@ -178,6 +250,9 @@ def main() -> int:
     report_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     report_path = report_dir / f"model_comparison_{stamp}.json"
+    metrics_csv_path = report_dir / f"class_metrics_{stamp}.csv"
+    confusion_csv_path = report_dir / f"confusion_matrix_{best.name}_{stamp}.csv"
+
     report = {
         "best_model": best.name,
         "selection_metric": args.metric,
@@ -188,13 +263,19 @@ def main() -> int:
         "augment_factor": args.augment_factor,
         "balance_target": args.balance_target,
         "results": [asdict(r) for r in results],
+        "class_reports": class_reports,
     }
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_class_metrics_csv(metrics_csv_path, class_reports)
+    write_confusion_csv(confusion_csv_path, y_test, best_pred)
 
+    print_low_class_scores(class_reports[best.name])
     print(f"\nBest model: {best.name} ({args.metric}={getattr(best, args.metric):.4f})")
     print(f"Saved model:  {args.output}")
     print(f"Saved scaler: {args.scaler}")
     print(f"Saved report: {report_path}")
+    print(f"Saved class metrics: {metrics_csv_path}")
+    print(f"Saved confusion matrix: {confusion_csv_path}")
     return 0
 
 
