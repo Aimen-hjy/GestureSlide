@@ -53,19 +53,19 @@ class GestureHUD:
 
         self.gesture_label = tk.Label(
             self.frame, textvariable=self.gesture_var, bg="#111111", fg="#ffffff",
-            font=("DejaVu Sans", 14, "bold"), anchor="w", padx=10,
+            font=("DejaVu Sans", 14, "bold"), anchor="w", padx=10, pady=0,
         )
         self.gesture_label.pack(fill="x")
 
         self.action_label = tk.Label(
             self.frame, textvariable=self.action_var, bg="#111111", fg="#66e0ff",
-            font=("DejaVu Sans", 10), anchor="w", padx=10,
+            font=("DejaVu Sans", 10), anchor="w", padx=10, pady=0,
         )
         self.action_label.pack(fill="x")
 
         self.detail_label = tk.Label(
             self.frame, textvariable=self.detail_var, bg="#111111", fg="#bbbbbb",
-            font=("DejaVu Sans", 9), anchor="w", padx=10, pady=(0, 5),
+            font=("DejaVu Sans", 9), anchor="w", padx=10, pady=2,
         )
         self.detail_label.pack(fill="x")
 
