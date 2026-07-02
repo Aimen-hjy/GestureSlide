@@ -35,8 +35,6 @@ MediaPipe Hands：21 个手部关键点
 - HistGradientBoosting
 - KNN
 
-项目实验过外部数据导入，但最终演示模型不使用 RPS 或 HaGRID 数据，因为它们与本地摄像头演示场景存在分布差异，实测后不如本地数据路线稳定。
-
 ### 2. PPT 放映时的悬浮 HUD
 
 普通 OpenCV 摄像头窗口在 PPT 全屏后容易被遮挡，因此项目增加了一个独立的简洁 HUD：
@@ -162,7 +160,7 @@ conda install -y tk
 
 ## 训练最终演示模型
 
-推荐使用本地数据训练，不导入外部数据：
+推荐使用本地数据训练：
 
 ```bash
 bash tools/run_project_pipeline.sh
