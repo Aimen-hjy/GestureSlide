@@ -36,12 +36,6 @@ GEOMETRY_DIRECTION_OVERRIDE = True
 GEOMETRY_DIRECTION_MIN_LENGTH = 0.08
 GEOMETRY_DIRECTION_RATIO = 1.30
 
-# ================== 可选安全门控（默认关闭） ==================
-# 最终演示默认使用直接控制。该开关仅保留为实验/备用配置，关闭时 UI 不显示门控状态。
-COMMAND_GATE_ENABLED = False
-COMMAND_GATE_TIMEOUT = 5.0
-COMMAND_GATE_EXTEND_ON_ACTION = True
-
 # ================== 鼠标控制设置 ==================
 MOUSE_SMOOTHING = 0.6       # 鼠标移动平滑系数 (0-1, 越小越平滑)
 MOUSE_SPEED = 2.0           # 鼠标移动速度倍率
