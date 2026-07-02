@@ -28,7 +28,13 @@ PINCH_DISTANCE_THRESHOLD = 0.05  # 捏合距离阈值 (归一化坐标)
 CLICK_COOLDOWN = 0.8        # 点击冷却时间 (秒)
 
 GESTURE_COOLDOWN = 1.2      # 通用手势冷却时间 (秒)
-GESTURE_HOLD_FRAMES = 5     # 手势需持续帧数才触发
+GESTURE_HOLD_FRAMES = 5     # 普通手势需持续帧数才触发
+HIGH_RISK_GESTURE_HOLD_FRAMES = 10  # 开始/退出/鼠标模式/点击等高风险动作更严格
+
+# 食指方向几何优先：用于 LEFT_POINT / RIGHT_POINT 翻页，减少对训练集角度分布的依赖。
+GEOMETRY_DIRECTION_OVERRIDE = True
+GEOMETRY_DIRECTION_MIN_LENGTH = 0.08
+GEOMETRY_DIRECTION_RATIO = 1.30
 
 # ================== 演示安全门控 ==================
 # 默认关闭：保持原始“识别到稳定手势即执行”的交互逻辑。
