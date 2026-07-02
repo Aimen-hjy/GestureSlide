@@ -36,13 +36,13 @@ def _session_files(data_dir: str | Path) -> list[Path]:
     if not files:
         raise FileNotFoundError(
             f"No session_*.json files found under {root}. "
-            "Run main.py --collect or tools/import_hagrid.py first."
+            "Run python main.py --collect to collect local training data."
         )
     return files
 
 
 def load_training_dataset(data_dir: str | Path) -> TrainingDataset:
-    """Load session JSON files. Old files are grouped by filename by default."""
+    """Load GestureSlide session JSON files."""
     xs: list[np.ndarray] = []
     ys: list[int] = []
     groups: list[str] = []
@@ -67,11 +67,10 @@ def load_training_dataset(data_dir: str | Path) -> TrainingDataset:
 
             if features.shape != (FEATURE_DIM,):
                 raise ValueError(
-                    f"{path}: sample {idx} has shape {features.shape}; "
-                    f"expected ({FEATURE_DIM},)"
+                    f"{path}: sample {idx} has shape {features.shape}; expected ({FEATURE_DIM},)"
                 )
             if not np.all(np.isfinite(features)):
-                raise ValueError(f"{path}: sample {idx} contains NaN or Inf")
+                raise ValueError(f"{path}: sample {idx} contains invalid numeric values")
             if label_id not in ID_TO_GESTURE:
                 raise ValueError(f"{path}: sample {idx} has unknown label_id {label_id}")
             if ID_TO_GESTURE[label_id] != label_name:
@@ -89,6 +88,7 @@ def load_training_dataset(data_dir: str | Path) -> TrainingDataset:
 
     if not xs:
         raise ValueError(f"No samples found under {data_dir}")
+
     return TrainingDataset(
         X=np.vstack(xs).astype(np.float64),
         y=np.asarray(ys, dtype=np.int32),
@@ -128,8 +128,8 @@ def print_dataset_audit(dataset: TrainingDataset) -> None:
         print("  - Class imbalance is high (>3x between largest and smallest class)")
 
     by_class: dict[int, set[str]] = defaultdict(set)
-    for y, g in zip(dataset.y, dataset.groups):
-        by_class[int(y)].add(str(g))
+    for y_value, group in zip(dataset.y, dataset.groups):
+        by_class[int(y_value)].add(str(group))
     weak = [GESTURE_NAMES[i] for i, gs in by_class.items() if len(gs) < 2]
     if weak:
         warned = True
@@ -152,8 +152,12 @@ def _random_split(dataset: TrainingDataset, test_size: float, seed: int):
     stratify = dataset.y if all(v >= 2 for v in counts.values()) else None
     if stratify is None:
         print("[warn] Some classes have fewer than 2 samples; split is not stratified")
-    return train_test_split(np.arange(dataset.n_samples), test_size=test_size,
-                            stratify=stratify, random_state=seed)
+    return train_test_split(
+        np.arange(dataset.n_samples),
+        test_size=test_size,
+        stratify=stratify,
+        random_state=seed,
+    )
 
 
 def _build_group_maps(dataset: TrainingDataset):
@@ -182,7 +186,7 @@ def _group_split(dataset: TrainingDataset, test_size: float, seed: int):
     selected: set[str] = set()
 
     def selected_count_for_label(label: int) -> int:
-        return sum(1 for g in selected if label in group_to_labels[g])
+        return sum(1 for group in selected if label in group_to_labels[group])
 
     def can_add(group: str) -> bool:
         for label in group_to_labels[group]:
@@ -200,29 +204,35 @@ def _group_split(dataset: TrainingDataset, test_size: float, seed: int):
         print(f"[warn] These classes have only one group and will be kept in train only: {names}")
 
     for label in sorted(eligible_labels, key=lambda x: len(label_to_groups[x])):
-        if any(label in group_to_labels[g] for g in selected):
+        if any(label in group_to_labels[group] for group in selected):
             continue
-        candidates = [g for g in label_to_groups[label] if g not in selected and can_add(g)]
+        candidates = [group for group in label_to_groups[label] if group not in selected and can_add(group)]
         if not candidates:
             continue
-        candidates.sort(key=lambda g: (abs((sum(group_size(x) for x in selected) + group_size(g)) - target_test_samples),
-                                       group_size(g), rng.random()))
+        candidates.sort(key=lambda group: (
+            abs((sum(group_size(x) for x in selected) + group_size(group)) - target_test_samples),
+            group_size(group),
+            rng.random(),
+        ))
         selected.add(candidates[0])
 
-    while sum(group_size(g) for g in selected) < target_test_samples:
-        candidates = [g for g in all_groups if g not in selected and can_add(g)]
+    while sum(group_size(group) for group in selected) < target_test_samples:
+        candidates = [group for group in all_groups if group not in selected and can_add(group)]
         if not candidates:
             break
-        current = sum(group_size(g) for g in selected)
-        candidates.sort(key=lambda g: (abs((current + group_size(g)) - target_test_samples),
-                                       group_size(g), rng.random()))
+        current = sum(group_size(group) for group in selected)
+        candidates.sort(key=lambda group: (
+            abs((current + group_size(group)) - target_test_samples),
+            group_size(group),
+            rng.random(),
+        ))
         selected.add(candidates[0])
 
     if not selected:
         print("[warn] Could not build a safe group split; falling back to random split")
         return _random_split(dataset, test_size, seed)
 
-    test_idx = np.array(sorted(i for g in selected for i in group_to_indices[g]), dtype=np.int64)
+    test_idx = np.array(sorted(i for group in selected for i in group_to_indices[group]), dtype=np.int64)
     train_idx = np.array(sorted(set(range(dataset.n_samples)) - set(test_idx.tolist())), dtype=np.int64)
 
     if len(train_idx) == 0 or len(test_idx) == 0:
@@ -246,7 +256,6 @@ def _augment_one_feature(x: np.ndarray, rng: np.random.RandomState) -> np.ndarra
     coords[:, :3] += rng.normal(0.0, 0.006, size=coords.shape)
 
     out[:COORD_FEATURE_DIM] = coords.reshape(-1)
-    # Keep finger-state bits stable; only jitter pinch distance slightly.
     out[68] = max(0.0, float(out[68] * scale + rng.normal(0.0, 0.008)))
     return out
 
@@ -293,7 +302,7 @@ def _augment_training_set(X: np.ndarray, y: np.ndarray,
 
     X_aug = np.vstack(xs).astype(np.float64)
     y_aug = np.hstack(ys).astype(np.int32)
-    print(f"\nAugmentation: train samples {len(y)} → {len(y_aug)}")
+    print(f"\nAugmentation: train samples {len(y)} -> {len(y_aug)}")
     return X_aug, y_aug
 
 
