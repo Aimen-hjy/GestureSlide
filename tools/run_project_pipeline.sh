@@ -76,6 +76,14 @@ if [[ "${USE_HAGRID_NONE}" == "1" ]]; then
     unzip -n "${archive}" -d "${HAGRID_ROOT}"
   done
 
+  # Some HaGRID no_gesture archives extract images flat into HAGRID_ROOT rather
+  # than HAGRID_ROOT/no_gesture. Normalize that layout for the importer.
+  mkdir -p "${HAGRID_ROOT}/no_gesture"
+  find "${HAGRID_ROOT}" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -print0 |
+    while IFS= read -r -d '' image; do
+      mv -n "${image}" "${HAGRID_ROOT}/no_gesture/"
+    done
+
   python tools/import_hagrid.py \
     --dataset-root "${HAGRID_ROOT}" \
     --annotations-root "${HAGRID_ROOT}/hagrid_annotations" \
