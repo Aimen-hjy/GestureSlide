@@ -83,11 +83,18 @@ if [[ "${USE_HAGRID_NONE}" == "1" ]]; then
   done
 
   # Some HaGRID no_gesture archives extract images flat into HAGRID_ROOT rather
-  # than HAGRID_ROOT/no_gesture. Normalize that layout for the importer.
+  # than HAGRID_ROOT/no_gesture. Normalize that layout for the importer. If a
+  # duplicate already exists under no_gesture, delete the flat duplicate so the
+  # pipeline is safe to rerun with set -euo pipefail.
   mkdir -p "${HAGRID_ROOT}/no_gesture"
   find "${HAGRID_ROOT}" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -print0 |
     while IFS= read -r -d '' image; do
-      mv -n "${image}" "${HAGRID_ROOT}/no_gesture/"
+      dest="${HAGRID_ROOT}/no_gesture/$(basename "${image}")"
+      if [[ -e "${dest}" ]]; then
+        rm -f "${image}"
+      else
+        mv "${image}" "${dest}"
+      fi
     done
 
   python tools/import_hagrid.py \
