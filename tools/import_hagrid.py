@@ -8,6 +8,7 @@ fallback is useful when the upstream annotations link is temporarily forbidden.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import sys
@@ -122,6 +123,20 @@ def _scan_class_images(dataset_root: Path, class_name: str) -> list[Path]:
     return sorted(set(images))
 
 
+def _pseudo_group_for_image(path: Path, source_class: str, n_buckets: int = 24) -> str:
+    """Stable pseudo-group for no-annotation imports.
+
+    Real HaGRID annotations contain user_id, which is ideal for group holdout.
+    If annotations are unavailable, one-folder-per-class would create only one
+    group and make group evaluation useless. A deterministic hash bucket is not
+    a real user split, but it is safer than a single group and keeps train/test
+    separation reproducible.
+    """
+    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
+    bucket = int(digest[:8], 16) % max(2, n_buckets)
+    return f"scan:{source_class}:bucket_{bucket:02d}"
+
+
 def _classify_point_direction(landmarks: list[dict[str, float]], min_length: float = 0.08) -> str | None:
     mcp = landmarks[HandDetector.INDEX_MCP]
     pip = landmarks[HandDetector.INDEX_PIP]
@@ -165,18 +180,18 @@ def _build_items(dataset_root: Path, annotations_root: Path | None, split: str,
             return items
         stats[f"missing_annotation:{source_class}"] += 1
 
-    # Fallback: no annotations. Scan images and synthesize metadata. Grouping by
-    # image-path prefix is not as strong as real user_id, but it still lets the
-    # training pipeline run and keeps samples traceable.
+    # Fallback: no annotations. Scan images and synthesize metadata. Pseudo
+    # groups are deterministic hash buckets so group holdout remains meaningful
+    # enough for a classroom project even without user_id annotations.
     paths = _scan_class_images(dataset_root, source_class)
     items = []
     for path in paths:
         rel = str(path)
-        group_key = path.parent.name
+        group_key = _pseudo_group_for_image(path, source_class)
         items.append((path, {
             "image_id": path.name,
             "label": source_class,
-            "user_id": f"scan:{source_class}:{group_key}",
+            "user_id": group_key,
             "file_name": rel,
         }))
     if paths:
@@ -305,7 +320,10 @@ def main() -> int:
                 seed=args.seed,
             )
             all_stats.update(stats)
-            out_path = out_dir / f"session_hagrid_{split}_{stamp}.json"
+            target_tag = "_".join(args.targets[:3])
+            if len(args.targets) > 3:
+                target_tag += "_etc"
+            out_path = out_dir / f"session_hagrid_{target_tag}_{split}_{stamp}.json"
             out_path.write_text(json.dumps(samples, ensure_ascii=False), encoding="utf-8")
             print(f"Saved {len(samples)} samples → {out_path}")
 
