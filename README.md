@@ -1,123 +1,180 @@
-# 基于 MediaPipe 的无接触手势 PPT 控制系统
+# GestureSlide：基于 MediaPipe 的无接触手势 PPT 控制系统
 
-通过摄像头实时识别手势，实现无接触控制 PPT 演示。支持翻页、放映、鼠标移动点击、音量调节等功能。
+GestureSlide 通过摄像头实时识别手势，实现对 PPT 放映的无接触控制。项目最终版本重点解决三个实际问题：
 
-本项目采用课堂展示友好的成熟架构：
+1. PPT 放映时仍能看到当前识别状态；
+2. 左右翻页手势尽量稳定、直观；
+3. 开始放映、退出放映、进入鼠标模式等高风险动作不容易误触发。
+
+项目没有采用大型图片模型训练路线。运行时使用 MediaPipe Hands 提取 21 个手部关键点，再将关键点转换为 69 维结构化特征，由轻量分类器和少量几何规则完成手势判断。
 
 ```text
-MediaPipe Hands 预训练视觉模型
-        ↓
-21 个 3D 手部关键点
-        ↓
-69 维结构化手势特征
-        ↓
-轻量分类器自动对比选择
-        ↓
-置信度阈值 + 连续帧稳定器 + 状态机动作控制
+摄像头图像
+   ↓
+MediaPipe Hands：21 个手部关键点
+   ↓
+69 维结构化特征
+   ↓
+轻量分类器 + 食指方向几何修正
+   ↓
+连续帧稳定判断 + PPT 动作控制
 ```
 
-## 功能一览
+## 最终保留的核心改进
 
-### 普通模式
-| 手势 | 动作 | 说明 |
-|------|------|------|
-| 👈 食指左指 | ← | 上一页 |
-| 👉 食指右指 | → | 下一页 |
-| 🖐 五指张开 | Esc | 退出 PPT 放映 |
-| 👌 OK 手势 | F5 | 开始 PPT 放映 |
-| ☝️ 食指朝上 | 切换模式 | 进入鼠标控制模式 |
-| ✌️ V 手势朝上 | 音量+ | 调高系统音量 |
-| ✌️ V 手势朝下 | 音量- | 调低系统音量 |
-| 👍 竖拇指 | F5 | 开始 PPT 放映 |
+### 1. 本地数据训练与多模型对比
 
-### 鼠标模式
-| 手势 | 动作 | 说明 |
-|------|------|------|
-| ☝️ 移动食指 | 移动光标 | 食指控制鼠标指针 |
-| 🤏 拇指食指捏合 | 左键点击 | 模拟鼠标点击 |
-| 🖐 五指张开 | 退出 | 返回普通模式 |
+最终演示模型使用本地采集数据训练，并保留特征级数据增强和类别平衡。训练流程会比较多种轻量模型，并按 `macro_f1` 保存表现最好的模型。
 
-## 项目亮点
+目前支持比较：
 
-- **两阶段识别**：MediaPipe 负责视觉关键点，轻量模型负责手势语义分类。
-- **模型自动选择**：支持 MLP、SVM、RandomForest、ExtraTrees、HistGradientBoosting、KNN 对比。
-- **特征级数据增强**：模拟角度、距离和关键点抖动变化，不需要下载超大图片数据集。
-- **分组评估**：按采集 session / source group 留出测试集，避免相邻帧泄漏导致准确率虚高。
-- **可解释界面**：实时显示识别置信度、识别后端、动作预判和系统模式。
-- **双状态机**：普通 PPT 控制模式 + 鼠标控制模式，适合课堂现场演示。
+- MLP
+- SVM
+- RandomForest
+- ExtraTrees
+- HistGradientBoosting
+- KNN
 
-## 系统结构
+项目实验过外部数据导入，但最终演示模型不使用 RPS 或 HaGRID 数据，因为它们与本地摄像头演示场景存在分布差异，实测后不如本地数据路线稳定。
+
+### 2. PPT 放映时的悬浮 HUD
+
+普通 OpenCV 摄像头窗口在 PPT 全屏后容易被遮挡，因此项目增加了一个独立的简洁 HUD：
+
+```bash
+python main.py --headless --hud
+```
+
+HUD 只显示必要状态：
+
+- 当前模式
+- 当前识别手势
+- 当前动作提示
+- 置信度
+- 识别后端
+
+它不显示完整摄像头画面，适合正式演示时使用。
+
+### 3. 左右翻页的几何方向修正
+
+`LEFT_POINT` 和 `RIGHT_POINT` 是 PPT 控制中最核心的动作。最终版本不是完全依赖分类器判断方向，而是在模型判断为“指向类手势”后，再用食指关键点方向修正左/右。
+
+这样既能提高左右方向稳定性，又避免单纯几何规则把 `NONE`、`THUMB_UP`、`THREE_FINGERS` 等非指向类误判成翻页命令。
+
+### 4. 高风险动作更严格
+
+普通翻页手势保持响应速度；高风险动作需要更长稳定帧后才会触发：
+
+- `OPEN_PALM`：退出放映
+- `OK_SIGN` / `THUMB_UP`：开始放映
+- `POINT_INDEX`：进入鼠标模式
+- `PINCH`：鼠标点击
+
+相关配置在 `config.py` 中：
+
+```python
+GESTURE_HOLD_FRAMES = 5
+HIGH_RISK_GESTURE_HOLD_FRAMES = 10
+```
+
+## 手势与动作
+
+### 核心 PPT 控制
+
+| 手势 | 动作 |
+|------|------|
+| 👌 OK 手势 | 开始放映 |
+| 👍 竖拇指 | 开始放映 |
+| 👈 食指左指 | 上一页 |
+| 👉 食指右指 | 下一页 |
+| 🖐 五指张开 | 退出放映 |
+
+### 可选功能
+
+| 手势 | 动作 |
+|------|------|
+| ☝️ 食指朝上 | 进入鼠标模式 |
+| ☝️ 移动食指 | 移动鼠标 |
+| 🤏 拇指食指捏合 | 鼠标点击 |
+| ✌️ V 手势朝上 | 音量增大 |
+| ✌️ V 手势朝下 | 音量减小 |
+
+正式演示建议优先展示核心 PPT 控制功能；鼠标和音量控制属于可选功能。
+
+## 项目结构
 
 ```text
 GestureSlide/
-├── main.py                    # 主程序入口 + 采集模式
-├── config.py                  # 全局配置参数
-├── hand_detector.py           # MediaPipe 手部检测封装
-├── gesture_model.py           # 特征提取、合成数据、ML 基础训练
-├── training_pipeline.py       # 数据加载、审计、增强、分组训练
-├── gesture_classifier.py      # ML/规则分类、置信度、防抖
-├── ppt_controller.py          # PPT 控制核心状态机 + UI overlay
-├── action_controller.py       # 键盘/鼠标动作执行器
-├── train_model.py             # 单模型训练入口
+├── main.py                         # 主程序入口、采集模式、HUD 启动参数
+├── config.py                       # 摄像头、识别阈值、稳定帧等配置
+├── hand_detector.py                # MediaPipe Hands 封装
+├── gesture_model.py                # 69 维特征提取与基础模型工具
+├── gesture_classifier.py           # ML/规则分类、置信度、冷却判断
+├── ppt_controller.py               # PPT 控制状态机、几何方向修正、动作执行逻辑
+├── action_controller.py            # 键盘/鼠标动作封装
+├── hud_window.py                   # PPT 放映时的悬浮状态 HUD
+├── train_model.py                  # 单模型训练入口
+├── training_pipeline.py            # 数据加载、审计、增强、分组训练
 ├── tools/
-│   ├── audit_training_data.py # 数据质量审计
-│   ├── compare_models.py      # 多模型对比并保存最优模型
-│   ├── import_image_folder.py # 通用图片文件夹数据导入
-│   ├── download_rps_dataset.py# 轻量 RPS 数据集下载
-│   └── run_project_pipeline.sh# 成熟训练流水线
+│   ├── audit_training_data.py      # 训练数据审计
+│   ├── compare_models.py           # 多模型比较并保存最佳模型
+│   ├── evaluate_geometry_direction.py # 离线评估左右指几何方向规则
+│   └── run_project_pipeline.sh     # 本地数据训练流水线
 ├── docs/
-│   ├── CLASSROOM_DEMO.md      # 课堂展示说明
-│   └── DATA_PIPELINE.md       # 数据流程说明
-├── gesture_model.joblib       # 自动生成，训练好的分类器
-├── gesture_scaler.joblib      # 自动生成，特征标准化器
-├── requirements.txt
-└── README.md
+│   ├── CLASSROOM_DEMO.md           # 课堂展示说明
+│   └── DATA_PIPELINE.md            # 本地数据采集与训练说明
+├── gesture_model.joblib            # 训练后生成的模型
+├── gesture_scaler.joblib           # 训练后生成的标准化器
+└── requirements.txt
 ```
 
 ## 环境要求
 
 - Python 3.10+
-- Windows / macOS / Linux
 - 摄像头
+- Windows / macOS / Linux
 
-## 快速开始
+Linux 下如果使用 Wayland，`pyautogui` 的全局键鼠模拟可能受限。控制无效时建议切换到 Xorg 会话，或确保 PPT/WPS 放映窗口处于前台。
 
-### 1. 安装依赖
+## 安装
 
 ```bash
-# Linux / macOS
+cd GestureSlide
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-
-# Windows
-pip install -r requirements.txt
 ```
 
-Debian/Ubuntu 若提示 `externally-managed-environment`，不要使用系统级 `pip`，应使用虚拟环境。
+Debian/Ubuntu 如果提示 `externally-managed-environment`，不要使用系统级 `pip`，应使用虚拟环境。
 
-### 2. 训练成熟版模型
+如果 HUD 报 `tkinter` 相关错误，Ubuntu 可安装：
 
-推荐先使用现有数据 + 特征增强 + 多模型对比：
+```bash
+sudo apt install python3-tk
+```
+
+Conda 环境可安装：
+
+```bash
+conda install -y tk
+```
+
+## 训练最终演示模型
+
+推荐使用本地数据训练，不导入外部数据：
 
 ```bash
 bash tools/run_project_pipeline.sh
 ```
 
-如果希望额外使用轻量外部数据集补充 `FIST / OPEN_PALM / PEACE_UP`：
-
-```bash
-USE_RPS=1 bash tools/run_project_pipeline.sh
-```
-
-该流程会自动执行：
+该流程会执行：
 
 ```text
-语法检查 → 数据审计 → 可选 RPS 导入 → 特征增强 → 多模型对比 → 保存最优模型
+语法检查 → 数据审计 → 特征增强 → 类别平衡 → 多模型比较 → 保存最佳模型
 ```
 
-也可以手动运行模型对比：
+也可以手动运行模型比较：
 
 ```bash
 python tools/compare_models.py \
@@ -129,119 +186,129 @@ python tools/compare_models.py \
   --metric macro_f1
 ```
 
-### 3. 运行程序
+训练后会生成：
 
-```bash
-python main.py
+```text
+gesture_model.joblib
+gesture_scaler.joblib
 ```
 
-## 使用步骤
+## 运行
 
-1. 确保摄像头正常工作。
-2. 打开 PPT 文件，并让 PPT / Impress 窗口位于前台。
-3. 运行本程序。
-4. 使用手势控制 PPT：
-   - OK 手势或竖拇指：开始放映
-   - 食指左指 / 右指：上一页 / 下一页
-   - 食指朝上：进入鼠标模式
-   - 食指移动：控制鼠标
-   - 捏合：鼠标点击
-   - 五指张开：退出鼠标模式或退出放映
-   - 按 `q` 退出程序
+### 调试模式：显示摄像头预览和 HUD
 
-## 数据采集与训练
+```bash
+python main.py --preview small --hud
+```
 
-### 采集模式
+适合查看手部骨架、识别结果和 HUD 是否一致。
+
+### 正式演示模式：只显示 HUD
+
+```bash
+python main.py --headless --hud
+```
+
+手动打开 PPT 并进入放映后运行该命令，程序不会显示摄像头大窗口，只显示悬浮 HUD。使用 `Ctrl+C` 退出。
+
+### 自动打开 PPT 并开始放映
+
+```bash
+python main.py --ppt "demo.pptx" --start --headless --hud
+```
+
+如果 WPS/PPT 打开较慢，可以延长等待时间：
+
+```bash
+python main.py --ppt "demo.pptx" --start --open-delay 6 --headless --hud
+```
+
+## 数据采集
 
 ```bash
 python main.py --collect
 ```
 
-采集界面操作：
+采集界面按键：
 
 | 按键 | 功能 |
 |------|------|
-| 0-9 / a | 选择手势标签：0=无手势 1=五指张开 2=握拳 3=左指 4=右指 5=下指 6=食指朝上 7=竖拇指 8=V朝上 9=V朝下 a=三指 |
+| 0-9 / a | 选择手势标签 |
 | 空格 | 开始/停止录制 |
 | s | 保存当前数据 |
 | q | 保存数据并退出 |
 
-每种手势建议分多次、在不同距离、角度、光照下录制；每类至少保留 3 个独立采集文件。标签 `NONE` 应录制“有手但不属于任何命令”的随机姿势，而不是空画面。切换标签前先暂停录制，避免过渡帧被标错。
+标签顺序：
 
-### 数据审计
+```text
+0 NONE
+1 OPEN_PALM
+2 FIST
+3 LEFT_POINT
+4 RIGHT_POINT
+5 DOWN_POINT
+6 POINT_INDEX
+7 THUMB_UP
+8 PEACE_UP
+9 PEACE_DOWN
+a THREE_FINGERS
+```
+
+采集建议：
+
+- 每个手势分多次采集，保留多个独立 `session_*.json` 文件；
+- 同一手势覆盖不同距离、角度、光照；
+- `NONE` 应该录制“有手但不属于任何命令”的随机姿势，而不是空画面；
+- 切换标签前先暂停录制，避免过渡帧被标错。
+
+## 数据审计与几何规则测试
+
+审计训练数据：
 
 ```bash
 python tools/audit_training_data.py training_data/
 ```
 
-重点关注：
-
-- 是否缺少 `NONE`
-- 是否类别严重不平衡
-- 每个类别是否至少有多个独立 group/session
-
-### 单模型训练
+离线测试左右指几何方向规则：
 
 ```bash
-python train_model.py --real training_data/ --augment --augment-factor 2 --balance-target 800
+python tools/evaluate_geometry_direction.py training_data/
 ```
 
-### 多模型比较并选择最佳模型
+该工具用于检查当前阈值是否会把非指向类误判成 `LEFT_POINT` / `RIGHT_POINT`。最终代码中，几何规则只用于修正指向类手势方向，不会单独把 `NONE` 等类别改成翻页命令。
 
-```bash
-python tools/compare_models.py --data training_data/ --augment --balance-target 800
-```
+## 技术细节
 
-## 轻量外部数据
-
-不建议直接下载 HaGRID 全量类别，因为单类压缩包可达几十 GB，而本项目不是图片 CNN 训练。更合理的路线是：
-
-```text
-本地真实数据为主 + 特征增强 + 少量轻量外部图片补充
-```
-
-可选 RPS 数据集导入：
-
-```bash
-python tools/download_rps_dataset.py --output-dir datasets/rps
-python tools/import_image_folder.py \
-  --dataset-root datasets/rps/rps \
-  --map rock=FIST paper=OPEN_PALM scissors=PEACE_UP \
-  --source-name rps_train \
-  --output-dir training_data/imported
-```
-
-## 技术原理
-
-### 手部检测
-
-使用 MediaPipe Hands 模型实时检测 21 个手部关键点坐标。
-
-### 特征构造
+### 69 维特征
 
 每帧手部数据转换为 69 维特征：
 
-- 63 维：21 个关键点相对手腕的 `(x, y, z)` 坐标
-- 5 维：拇指、食指、中指、无名指、小指是否伸展
-- 1 维：拇指尖与食指尖距离
+- 63 维：21 个关键点相对手腕的 `(x, y, z)` 坐标；
+- 5 维：拇指、食指、中指、无名指、小指是否伸展；
+- 1 维：拇指尖与食指尖距离。
 
-### 手势识别
+### 运行时识别逻辑
 
-后端分类器可以是 MLP、SVM、RandomForest、ExtraTrees、HistGradientBoosting 或 KNN。运行时通过 `predict_proba` 得到类别概率，置信度低于阈值时返回 `NONE`，减少误触发。
+- 低置信度分类结果会被视为 `NONE`；
+- OK 和捏合等动作有规则补充判断；
+- 手势需要连续稳定若干帧才会触发；
+- 每种动作有冷却时间，避免短时间重复触发；
+- 左/右翻页在模型判断为指向类后，使用食指方向做二次修正；
+- 高风险动作使用更长稳定帧，减少误开始、误退出、误进鼠标模式。
 
-### 稳定性机制
+## 推荐展示流程
 
-- 手势需持续 N 帧才确认触发
-- 每种动作有独立冷却时间
-- 鼠标移动采用平滑和死区过滤
-- 捏合和 OK 手势使用规则检测补充 ML 分类
-- UI 显示置信度和下一步动作，便于调试和展示
+1. 启动 PPT/WPS 并进入放映；
+2. 运行：
 
-## Linux / Wayland 注意事项
+```bash
+python main.py --headless --hud
+```
 
-`pyautogui` 向当前获得焦点的窗口发送键盘事件。运行后应确保 PPT / Impress 放映窗口处于前台；预览窗口获得焦点时，翻页键可能发送到预览窗口。Wayland 会限制全局键鼠模拟，遇到控制无效时可改用 Xorg 会话，或实现针对 LibreOffice / PowerPoint 的专用控制后端。
+3. 展示核心动作：开始放映、上一页、下一页、退出放映；
+4. 说明 HUD 中的手势、置信度和识别后端；
+5. 如需展示调试过程，再使用：
 
-## 更多说明
-
-- 课堂展示与答辩说明：`docs/CLASSROOM_DEMO.md`
-- 数据导入与训练说明：`docs/DATA_PIPELINE.md`
+```bash
+python main.py --preview small --hud
+```
