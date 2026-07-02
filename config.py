@@ -18,11 +18,11 @@ MIN_TRACKING_CONFIDENCE = 0.7    # 手部追踪置信度阈值
 MAX_NUM_HANDS = 1                # 最多检测手数 (单手控制)
 STATIC_IMAGE_MODE = False        # 非静态图片模式
 
-# ================== 手势识别阈值 ==================
-SWIPE_THRESHOLD = 60        # 滑动最小像素距离
-SWIPE_HISTORY_SIZE = 10     # 滑动历史帧数
-SWIPE_COOLDOWN = 1.0        # 滑动冷却时间 (秒)
-SWIPE_GESTURE_COOLDOWN = 1.5  # 翻页手势冷却时间 (秒)
+# ================== 手势识别与触发阈值 ==================
+SWIPE_THRESHOLD = 60        # 保留给滑动类扩展逻辑
+SWIPE_HISTORY_SIZE = 10     # 保留给滑动类扩展逻辑
+SWIPE_COOLDOWN = 1.0        # 保留给滑动类扩展逻辑
+SWIPE_GESTURE_COOLDOWN = 1.5  # 左右翻页冷却时间 (秒)
 
 PINCH_DISTANCE_THRESHOLD = 0.05  # 捏合距离阈值 (归一化坐标)
 CLICK_COOLDOWN = 0.8        # 点击冷却时间 (秒)
@@ -31,14 +31,13 @@ GESTURE_COOLDOWN = 1.2      # 通用手势冷却时间 (秒)
 GESTURE_HOLD_FRAMES = 5     # 普通手势需持续帧数才触发
 HIGH_RISK_GESTURE_HOLD_FRAMES = 10  # 开始/退出/鼠标模式/点击等高风险动作更严格
 
-# 食指方向几何优先：用于 LEFT_POINT / RIGHT_POINT 翻页，减少对训练集角度分布的依赖。
+# 食指方向几何修正：只用于模型已判断为“指向类”后的 LEFT_POINT / RIGHT_POINT 方向修正。
 GEOMETRY_DIRECTION_OVERRIDE = True
 GEOMETRY_DIRECTION_MIN_LENGTH = 0.08
 GEOMETRY_DIRECTION_RATIO = 1.30
 
-# ================== 演示安全门控 ==================
-# 默认关闭：保持原始“识别到稳定手势即执行”的交互逻辑。
-# 如需降低误触发，可临时改成 True。
+# ================== 可选安全门控（默认关闭） ==================
+# 最终演示默认使用直接控制。该开关仅保留为实验/备用配置，关闭时 UI 不显示门控状态。
 COMMAND_GATE_ENABLED = False
 COMMAND_GATE_TIMEOUT = 5.0
 COMMAND_GATE_EXTEND_ON_ACTION = True
