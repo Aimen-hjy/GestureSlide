@@ -144,14 +144,24 @@ class PPTController:
         return Gesture.NONE
 
     def _geometry_direction_override(self, raw_gesture: Gesture, hand_data: dict) -> Gesture:
-        """Use index-finger geometry for left/right page gestures when clear.
+        """Use index-finger geometry only to refine pointing candidates.
 
-        LEFT_POINT / RIGHT_POINT are directional commands. They are more robustly
-        derived from the index-finger vector than from a pure classifier output.
-        The override is conservative: index finger must be extended while middle,
-        ring and pinky are folded, and the horizontal vector must dominate.
+        The offline test showed the pure geometry rule recognizes most
+        LEFT/RIGHT samples, but also turns local NONE-like boundary samples into
+        LEFT_POINT. Therefore geometry must not create a page command from an
+        unrelated model result. It only refines gestures already judged to be an
+        index-pointing family by the classifier.
         """
         if not getattr(config, "GEOMETRY_DIRECTION_OVERRIDE", True):
+            return raw_gesture
+
+        pointing_candidates = {
+            Gesture.LEFT_POINT,
+            Gesture.RIGHT_POINT,
+            Gesture.DOWN_POINT,
+            Gesture.POINT_INDEX,
+        }
+        if raw_gesture not in pointing_candidates:
             return raw_gesture
 
         finger_states = hand_data.get("finger_states") or []
@@ -183,7 +193,7 @@ class PPTController:
 
         if abs(dx) > abs(dy) * ratio:
             self.current_confidence = max(self.current_confidence, 0.95)
-            self.current_backend = "geom"
+            self.current_backend = "ml+geom" if self.current_backend == "ml" else "geom"
             return Gesture.LEFT_POINT if dx < 0 else Gesture.RIGHT_POINT
 
         return raw_gesture
