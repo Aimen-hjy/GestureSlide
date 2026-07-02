@@ -137,11 +137,13 @@ Linux 下如果使用 Wayland，`pyautogui` 的全局键鼠模拟可能受限。
 ## 安装
 
 ```bash
-cd GestureSlide
+# Linux
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+# Windows
+pip install -r requirements.txt
 ```
 
 Debian/Ubuntu 如果提示 `externally-managed-environment`，不要使用系统级 `pip`，应使用虚拟环境。
