@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
-# Mature classroom pipeline for GestureSlide.
+# Final local-data training pipeline for GestureSlide.
 #
-# It keeps the original project architecture, but adds the best-value steps:
+# Default route used by the final demo:
 #   1. syntax check
-#   2. data audit
-#   3. optional web data import: HaGRID no_gesture for NONE, RPS for 3 easy classes
-#   4. feature augmentation
-#   5. model comparison and best-model export
+#   2. local training-data audit
+#   3. feature augmentation
+#   4. class balancing
+#   5. lightweight model comparison and best-model export
 #
 # Usage:
 #   bash tools/run_project_pipeline.sh
 #
-# Optional:
-#   USE_HAGRID_NONE=1 bash tools/run_project_pipeline.sh
-#   HAGRID_SKIP_DOWNLOAD=1 USE_HAGRID_NONE=1 bash tools/run_project_pipeline.sh
-#   USE_RPS=1 bash tools/run_project_pipeline.sh
+# Tunable examples:
 #   BALANCE_TARGET=800 AUGMENT_FACTOR=2 bash tools/run_project_pipeline.sh
-#   CLEAN_RPS=0 USE_RPS=1 bash tools/run_project_pipeline.sh
-#   CLEAN_HAGRID=0 USE_HAGRID_NONE=1 bash tools/run_project_pipeline.sh
+#   MODELS="hgb extra_trees random_forest" bash tools/run_project_pipeline.sh
 #
-# Important:
-#   HaGRID no_gesture is the recommended web-data supplement because the local
-#   dataset is weak in NONE. RPS is optional and may hurt full 11-class balance.
+# External-data import code is kept for experiments, but the final recommended
+# demo model should use local camera data only.
 
 set -euo pipefail
 
@@ -46,12 +41,14 @@ python -m py_compile \
   gesture_classifier.py \
   ppt_controller.py \
   action_controller.py \
+  hud_window.py \
   training_pipeline.py \
   train_model.py \
   tools/audit_training_data.py \
   tools/import_image_folder.py \
   tools/import_hagrid.py \
-  tools/compare_models.py
+  tools/compare_models.py \
+  tools/evaluate_geometry_direction.py
 
 mkdir -p training_data/imported external datasets "${HAGRID_ROOT}"
 
@@ -64,6 +61,7 @@ fi
 
 python tools/audit_training_data.py training_data/
 
+# Experimental path only. Not used by the final recommended demo model.
 if [[ "${USE_HAGRID_NONE}" == "1" ]]; then
   if [[ "${HAGRID_SKIP_DOWNLOAD}" != "1" ]]; then
     if [[ ! -d "${HAGRID_REPO}/.git" ]]; then
@@ -72,7 +70,6 @@ if [[ "${USE_HAGRID_NONE}" == "1" ]]; then
       git -C "${HAGRID_REPO}" pull --ff-only
     fi
 
-    # Download only the lightweight no_gesture archive (~493.9 MB), not 40GB gesture classes.
     python "${HAGRID_REPO}/download.py" --save_path "${HAGRID_ROOT}" --dataset --targets no_gesture
   else
     echo "[info] HAGRID_SKIP_DOWNLOAD=1: using existing files under ${HAGRID_ROOT}"
@@ -82,10 +79,6 @@ if [[ "${USE_HAGRID_NONE}" == "1" ]]; then
     unzip -n "${archive}" -d "${HAGRID_ROOT}"
   done
 
-  # Some HaGRID no_gesture archives extract images flat into HAGRID_ROOT rather
-  # than HAGRID_ROOT/no_gesture. Normalize that layout for the importer. If a
-  # duplicate already exists under no_gesture, delete the flat duplicate so the
-  # pipeline is safe to rerun with set -euo pipefail.
   mkdir -p "${HAGRID_ROOT}/no_gesture"
   find "${HAGRID_ROOT}" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \) -print0 |
     while IFS= read -r -d '' image; do
@@ -108,6 +101,7 @@ if [[ "${USE_HAGRID_NONE}" == "1" ]]; then
   python tools/audit_training_data.py training_data/
 fi
 
+# Experimental path only. Not used by the final recommended demo model.
 if [[ "${USE_RPS}" == "1" ]]; then
   python tools/download_rps_dataset.py --output-dir "${RPS_ROOT}"
 
@@ -139,4 +133,4 @@ python tools/compare_models.py \
   --output gesture_model.joblib \
   --scaler gesture_scaler.joblib
 
-printf '\nPipeline complete. Run the demo with:\n  python main.py\n'
+printf '\nPipeline complete. Recommended demo command:\n  python main.py --headless --hud\n'
