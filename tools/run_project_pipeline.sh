@@ -4,7 +4,7 @@
 # It keeps the original project architecture, but adds the best-value steps:
 #   1. syntax check
 #   2. data audit
-#   3. optional lightweight RPS import (~219 MiB, not 40GB/class)
+#   3. optional web data import: HaGRID no_gesture for NONE, RPS for 3 easy classes
 #   4. feature augmentation
 #   5. model comparison and best-model export
 #
@@ -12,19 +12,26 @@
 #   bash tools/run_project_pipeline.sh
 #
 # Optional:
+#   USE_HAGRID_NONE=1 bash tools/run_project_pipeline.sh
 #   USE_RPS=1 bash tools/run_project_pipeline.sh
 #   BALANCE_TARGET=800 AUGMENT_FACTOR=2 bash tools/run_project_pipeline.sh
-#   CLEAN_RPS=0 USE_RPS=1 bash tools/run_project_pipeline.sh  # keep previous RPS imports
+#   CLEAN_RPS=0 USE_RPS=1 bash tools/run_project_pipeline.sh
+#   CLEAN_HAGRID=0 USE_HAGRID_NONE=1 bash tools/run_project_pipeline.sh
 #
 # Important:
-#   RPS is supplemental and may hurt cross-session performance. The default
-#   USE_RPS=0 trains only on local GestureSlide data.
+#   HaGRID no_gesture is the recommended web-data supplement because the local
+#   dataset is weak in NONE. RPS is optional and may hurt full 11-class balance.
 
 set -euo pipefail
 
 USE_RPS="${USE_RPS:-0}"
+USE_HAGRID_NONE="${USE_HAGRID_NONE:-0}"
 CLEAN_RPS="${CLEAN_RPS:-1}"
+CLEAN_HAGRID="${CLEAN_HAGRID:-1}"
 RPS_ROOT="${RPS_ROOT:-datasets/rps}"
+HAGRID_ROOT="${HAGRID_ROOT:-datasets/hagrid}"
+HAGRID_REPO="${HAGRID_REPO:-external/hagrid}"
+HAGRID_NONE_MAX="${HAGRID_NONE_MAX:-1500}"
 AUGMENT_FACTOR="${AUGMENT_FACTOR:-2}"
 BALANCE_TARGET="${BALANCE_TARGET:-800}"
 SPLIT_STRATEGY="${SPLIT_STRATEGY:-group}"
@@ -41,13 +48,44 @@ python -m py_compile \
   train_model.py \
   tools/audit_training_data.py \
   tools/import_image_folder.py \
+  tools/import_hagrid.py \
   tools/compare_models.py
+
+mkdir -p training_data/imported external datasets "${HAGRID_ROOT}"
 
 if [[ "${CLEAN_RPS}" == "1" ]]; then
   rm -f training_data/imported/session_rps_*.json 2>/dev/null || true
 fi
+if [[ "${CLEAN_HAGRID}" == "1" ]]; then
+  rm -f training_data/imported/session_hagrid_*.json 2>/dev/null || true
+fi
 
 python tools/audit_training_data.py training_data/
+
+if [[ "${USE_HAGRID_NONE}" == "1" ]]; then
+  if [[ ! -d "${HAGRID_REPO}/.git" ]]; then
+    git clone https://github.com/hukenovs/hagrid.git "${HAGRID_REPO}"
+  else
+    git -C "${HAGRID_REPO}" pull --ff-only
+  fi
+
+  # Download only the lightweight no_gesture archive (~493.9 MB), not 40GB gesture classes.
+  python "${HAGRID_REPO}/download.py" --save_path "${HAGRID_ROOT}" --dataset --targets no_gesture
+
+  find "${HAGRID_ROOT}" -type f -name "*.zip" -print0 | while IFS= read -r -d '' archive; do
+    unzip -n "${archive}" -d "${HAGRID_ROOT}"
+  done
+
+  python tools/import_hagrid.py \
+    --dataset-root "${HAGRID_ROOT}" \
+    --annotations-root "${HAGRID_ROOT}/hagrid_annotations" \
+    --output-dir training_data/imported \
+    --splits all \
+    --targets no_gesture \
+    --max-per-class "${HAGRID_NONE_MAX}"
+
+  python tools/audit_training_data.py training_data/
+fi
 
 if [[ "${USE_RPS}" == "1" ]]; then
   python tools/download_rps_dataset.py --output-dir "${RPS_ROOT}"
