@@ -32,22 +32,26 @@ class PPTController:
         self.mode = ControllerMode.NORMAL
         self.slideshow_started = False
 
-        # Command safety gate: gestures are recognized continuously, but actions
-        # are executed only after an intentional OK / thumb-up activation window.
-        self.command_gate_enabled = bool(getattr(config, "COMMAND_GATE_ENABLED", True))
+        # Command safety gate is kept as an optional switch, but disabled by default.
+        self.command_gate_enabled = bool(getattr(config, "COMMAND_GATE_ENABLED", False))
         self._command_active_until = 0.0
+
+        # Variable-hold stabilizer. Low-risk gestures stay responsive; high-risk
+        # gestures need more frames before execution.
+        self._stable_candidate: Gesture = Gesture.NONE
+        self._stable_candidate_frames = 0
 
         # Mouse mode state
         self._mouse_ref_x: float | None = None
         self._mouse_ref_y: float | None = None
         self._last_mouse_time = 0.0
 
-        # State info (for UI rendering)
+        # State info (for UI/HUD rendering)
         self.current_gesture: Gesture = Gesture.NONE
         self.current_finger_states: list[bool] = [False] * 5
         self.current_confidence: float = 0.0
         self.current_backend: str = "rule"
-        self.status_message: str = "Locked: OK/Thumb Up to activate" if self.command_gate_enabled else "Ready"
+        self.status_message: str = "Ready"
         self.fps: float = 0.0
         self._fps_times: list[float] = []
 
@@ -93,7 +97,6 @@ class PPTController:
             return True
         if self._is_command_gate_open():
             return True
-
         self.status_message = "Locked: show OK/Thumb Up before command"
         return False
 
@@ -107,14 +110,89 @@ class PPTController:
             return f"Gate: ACTIVE {remaining:.1f}s"
         return "Gate: LOCKED"
 
+    # ==================== Practical recognition helpers ====================
+
+    def _is_high_risk_gesture(self, gesture: Gesture) -> bool:
+        return gesture in {
+            Gesture.OPEN_PALM,      # exit slideshow
+            Gesture.OK_SIGN,        # start slideshow
+            Gesture.THUMB_UP,       # start slideshow
+            Gesture.POINT_INDEX,    # enter mouse mode
+            Gesture.PINCH,          # mouse click
+        }
+
+    def _required_hold_frames(self, gesture: Gesture) -> int:
+        if self._is_high_risk_gesture(gesture):
+            return int(getattr(config, "HIGH_RISK_GESTURE_HOLD_FRAMES", 10))
+        return int(getattr(config, "GESTURE_HOLD_FRAMES", 5))
+
+    def _stable_gesture_with_variable_hold(self, raw_gesture: Gesture) -> Gesture:
+        """Confirm a raw gesture after a gesture-specific hold-frame count."""
+        if raw_gesture == Gesture.NONE:
+            self._stable_candidate = Gesture.NONE
+            self._stable_candidate_frames = 0
+            return Gesture.NONE
+
+        if raw_gesture == self._stable_candidate:
+            self._stable_candidate_frames += 1
+        else:
+            self._stable_candidate = raw_gesture
+            self._stable_candidate_frames = 1
+
+        if self._stable_candidate_frames >= self._required_hold_frames(raw_gesture):
+            return raw_gesture
+        return Gesture.NONE
+
+    def _geometry_direction_override(self, raw_gesture: Gesture, hand_data: dict) -> Gesture:
+        """Use index-finger geometry for left/right page gestures when clear.
+
+        LEFT_POINT / RIGHT_POINT are directional commands. They are more robustly
+        derived from the index-finger vector than from a pure classifier output.
+        The override is conservative: index finger must be extended while middle,
+        ring and pinky are folded, and the horizontal vector must dominate.
+        """
+        if not getattr(config, "GEOMETRY_DIRECTION_OVERRIDE", True):
+            return raw_gesture
+
+        finger_states = hand_data.get("finger_states") or []
+        if len(finger_states) < 5:
+            return raw_gesture
+
+        thumb, index, middle, ring, pinky = finger_states[:5]
+        if not index or middle or ring or pinky:
+            return raw_gesture
+
+        landmarks = hand_data.get("landmarks") or []
+        try:
+            mcp = landmarks[HandDetector.INDEX_MCP]
+            pip = landmarks[HandDetector.INDEX_PIP]
+            tip = landmarks[HandDetector.INDEX_TIP]
+        except Exception:
+            return raw_gesture
+
+        dx = float(tip["x"] - pip["x"])
+        dy = float(tip["y"] - pip["y"])
+        total_dx = float(tip["x"] - mcp["x"])
+        total_dy = float(tip["y"] - mcp["y"])
+        length = (total_dx ** 2 + total_dy ** 2) ** 0.5
+
+        min_len = float(getattr(config, "GEOMETRY_DIRECTION_MIN_LENGTH", 0.08))
+        ratio = float(getattr(config, "GEOMETRY_DIRECTION_RATIO", 1.30))
+        if length < min_len:
+            return raw_gesture
+
+        if abs(dx) > abs(dy) * ratio:
+            self.current_confidence = max(self.current_confidence, 0.95)
+            self.current_backend = "geom"
+            return Gesture.LEFT_POINT if dx < 0 else Gesture.RIGHT_POINT
+
+        return raw_gesture
+
     # ==================== Main frame loop ====================
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Process one frame: detect → classify → execute → render.
-        """
+        """Process one frame: detect → classify → execute → render."""
         self._calc_fps()
-
         hand_data = self.hand_detector.detect_hand(frame)
 
         if hand_data is not None:
@@ -127,11 +205,13 @@ class PPTController:
             hand_data["thumb_index_dist"] = thumb_index_dist
 
             raw_gesture = self.gesture_classifier.classify(hand_data)
-            self.current_gesture = raw_gesture
             self.current_confidence = self.gesture_classifier.last_confidence
             self.current_backend = self.gesture_classifier.last_backend
+            raw_gesture = self._geometry_direction_override(raw_gesture, hand_data)
+            self.current_gesture = raw_gesture
 
-            # Volume rapid-press only works while the command gate is active.
+            # Volume rapid-press remains a direct raw gesture path. It is not a
+            # core PPT command and can be ignored during normal demo if unused.
             VOLUME_INTERVAL = 5  # press every N frames (~6/sec at 30fps)
             if (self._is_command_gate_open()
                     and raw_gesture in (Gesture.PEACE_UP, Gesture.PEACE_DOWN)):
@@ -144,7 +224,6 @@ class PPTController:
                         else:
                             self.action_controller.volume_down_press()
                         self._volume_tick = 0
-                        self._extend_command_gate_after_action()
                 else:
                     self._volume_debounce += 1
                     if self._volume_debounce >= 3:
@@ -153,12 +232,11 @@ class PPTController:
                         self._volume_tick = 0
                         target_name = "Up" if target == "up" else "Down"
                         self.status_message = f"Volume {target_name}"
-                        self._extend_command_gate_after_action()
             else:
                 self._volume_debounce = 0
                 self._volume_active = None
 
-            stable_gesture = self.gesture_classifier.get_stable_gesture(raw_gesture)
+            stable_gesture = self._stable_gesture_with_variable_hold(raw_gesture)
 
             # Mouse movement is continuous and should not wait for stable trigger.
             if (self.mode == ControllerMode.MOUSE
@@ -174,7 +252,8 @@ class PPTController:
             self.current_confidence = 0.0
             self.current_backend = "none"
             self.current_finger_states = [False] * 5
-            self.gesture_classifier.get_stable_gesture(Gesture.NONE)
+            self._stable_candidate = Gesture.NONE
+            self._stable_candidate_frames = 0
             self._mouse_ref_x = None
             self._mouse_ref_y = None
             self.action_controller.reset_mouse_smoothing()
@@ -219,13 +298,10 @@ class PPTController:
 
         elif gesture in (Gesture.OK_SIGN, Gesture.THUMB_UP):
             if self.gesture_classifier.should_trigger(gesture):
-                self._activate_command_gate()
-                if not self.slideshow_started:
-                    self.action_controller.start_slideshow()
-                    self.slideshow_started = True
-                    self.status_message = "Start Slideshow + Gate Active"
-                else:
-                    self.status_message = "Gate Active: give command"
+                self.action_controller.start_slideshow()
+                self.slideshow_started = True
+                self.status_message = "Start Slideshow"
+                self._extend_command_gate_after_action()
 
     def _handle_mouse_mode(self, gesture: Gesture, landmarks: list):
         """Mouse mode gesture handling."""
@@ -294,7 +370,7 @@ class PPTController:
     # ==================== Overlay rendering ====================
 
     def _action_hint(self) -> str:
-        """Human-readable next action for the demo overlay."""
+        """Human-readable next action for the demo overlay/HUD."""
         if (self.command_gate_enabled
                 and self.mode == ControllerMode.NORMAL
                 and not self._is_command_gate_open()
@@ -314,8 +390,8 @@ class PPTController:
             Gesture.RIGHT_POINT: "Next slide",
             Gesture.OPEN_PALM: "Exit slideshow",
             Gesture.POINT_INDEX: "Enter mouse mode",
-            Gesture.OK_SIGN: "Activate / start slideshow",
-            Gesture.THUMB_UP: "Activate / start slideshow",
+            Gesture.OK_SIGN: "Start slideshow",
+            Gesture.THUMB_UP: "Start slideshow",
             Gesture.PEACE_UP: "Volume up",
             Gesture.PEACE_DOWN: "Volume down",
             Gesture.FIST: "Recognized, no action mapped",
