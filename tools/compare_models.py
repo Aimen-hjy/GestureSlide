@@ -149,8 +149,12 @@ def write_class_metrics_csv(path: Path, reports: dict[str, dict]) -> None:
         writer.writerows(rows)
 
 
+def _confusion_labels(y_true: np.ndarray, y_pred: np.ndarray) -> list[int]:
+    return sorted(set(map(int, y_true)) | set(map(int, y_pred)))
+
+
 def write_confusion_csv(path: Path, y_true: np.ndarray, y_pred: np.ndarray) -> None:
-    labels = sorted(set(map(int, y_true)) | set(map(int, y_pred)))
+    labels = _confusion_labels(y_true, y_pred)
     names = [_label_name(label) for label in labels]
     matrix = confusion_matrix(y_true, y_pred, labels=labels)
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -158,6 +162,38 @@ def write_confusion_csv(path: Path, y_true: np.ndarray, y_pred: np.ndarray) -> N
         writer.writerow(["true\\pred", *names])
         for name, row in zip(names, matrix):
             writer.writerow([name, *map(int, row)])
+
+
+def top_confusions(y_true: np.ndarray, y_pred: np.ndarray, max_rows: int = 10) -> list[dict[str, int | str | float]]:
+    labels = _confusion_labels(y_true, y_pred)
+    matrix = confusion_matrix(y_true, y_pred, labels=labels)
+    rows: list[dict[str, int | str | float]] = []
+    for i, true_label in enumerate(labels):
+        support = int(matrix[i, :].sum())
+        if support <= 0:
+            continue
+        for j, pred_label in enumerate(labels):
+            if i == j:
+                continue
+            count = int(matrix[i, j])
+            if count <= 0:
+                continue
+            rows.append({
+                "true": _label_name(true_label),
+                "pred": _label_name(pred_label),
+                "count": count,
+                "rate": count / support,
+                "support": support,
+            })
+    rows.sort(key=lambda r: (int(r["count"]), float(r["rate"])), reverse=True)
+    return rows[:max_rows]
+
+
+def write_confusions_csv(path: Path, rows: list[dict[str, int | str | float]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["true", "pred", "count", "rate", "support"])
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def print_results(results: list[ModelResult]) -> None:
@@ -171,9 +207,14 @@ def print_results(results: list[ModelResult]) -> None:
 
 def print_low_class_scores(report: dict, max_rows: int = 5) -> None:
     class_rows = []
+    skipped_zero_support = []
     for class_name, metrics in report.items():
         if isinstance(metrics, dict) and class_name not in {"macro avg", "weighted avg"}:
-            class_rows.append((class_name, float(metrics.get("f1-score", 0.0)), int(metrics.get("support", 0))))
+            support = int(metrics.get("support", 0))
+            if support <= 0:
+                skipped_zero_support.append(class_name)
+                continue
+            class_rows.append((class_name, float(metrics.get("f1-score", 0.0)), support))
     class_rows.sort(key=lambda x: (x[1], x[2]))
     print("\nLowest-F1 classes for the best model")
     print("=" * 52)
@@ -181,6 +222,17 @@ def print_low_class_scores(report: dict, max_rows: int = 5) -> None:
     print("-" * 52)
     for class_name, f1, support in class_rows[:max_rows]:
         print(f"{class_name:<18} {f1:>8.4f} {support:>10}")
+    if skipped_zero_support:
+        print(f"[info] skipped zero-support classes: {', '.join(skipped_zero_support)}")
+
+
+def print_top_confusions(rows: list[dict[str, int | str | float]]) -> None:
+    print("\nTop confusion pairs for the best model")
+    print("=" * 68)
+    print(f"{'true':<18} {'predicted_as':<18} {'count':>8} {'rate':>8} {'support':>8}")
+    print("-" * 68)
+    for row in rows:
+        print(f"{str(row['true']):<18} {str(row['pred']):<18} {int(row['count']):>8} {float(row['rate']):>8.2%} {int(row['support']):>8}")
 
 
 def main() -> int:
@@ -252,6 +304,8 @@ def main() -> int:
     report_path = report_dir / f"model_comparison_{stamp}.json"
     metrics_csv_path = report_dir / f"class_metrics_{stamp}.csv"
     confusion_csv_path = report_dir / f"confusion_matrix_{best.name}_{stamp}.csv"
+    confusion_pairs_path = report_dir / f"top_confusions_{best.name}_{stamp}.csv"
+    confusion_rows = top_confusions(y_test, best_pred)
 
     report = {
         "best_model": best.name,
@@ -264,18 +318,22 @@ def main() -> int:
         "balance_target": args.balance_target,
         "results": [asdict(r) for r in results],
         "class_reports": class_reports,
+        "top_confusions": confusion_rows,
     }
     report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     write_class_metrics_csv(metrics_csv_path, class_reports)
     write_confusion_csv(confusion_csv_path, y_test, best_pred)
+    write_confusions_csv(confusion_pairs_path, confusion_rows)
 
     print_low_class_scores(class_reports[best.name])
+    print_top_confusions(confusion_rows)
     print(f"\nBest model: {best.name} ({args.metric}={getattr(best, args.metric):.4f})")
     print(f"Saved model:  {args.output}")
     print(f"Saved scaler: {args.scaler}")
     print(f"Saved report: {report_path}")
     print(f"Saved class metrics: {metrics_csv_path}")
     print(f"Saved confusion matrix: {confusion_csv_path}")
+    print(f"Saved top confusions: {confusion_pairs_path}")
     return 0
 
 
