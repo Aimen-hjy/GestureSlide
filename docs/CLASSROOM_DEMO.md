@@ -1,38 +1,34 @@
-# GestureSlide 课堂展示成熟版说明
+# GestureSlide 课堂展示说明
 
-本项目定位为大学课堂中的小型实时交互系统，而不是研究级大模型。优化目标是：保留原项目主框架，提升准确性、稳定性、可解释性和现场展示观感。
+本项目定位为课堂场景下的实时交互系统：用普通摄像头识别手势，并控制 PPT 放映。最终版本不追求堆叠更多手势或外部数据，而是围绕实际演示中的稳定性和可见性做改进。
 
-## 一句话定位
-
-GestureSlide 采用“两阶段轻量识别架构”：
+## 系统一句话说明
 
 ```text
-MediaPipe Hands 预训练视觉模型 → 21 个 3D 手部关键点 → 69 维结构化特征 → 轻量分类器 → 状态机动作控制
+MediaPipe Hands → 21 个手部关键点 → 69 维特征 → 轻量分类器 → 几何方向修正 → PPT 动作控制
 ```
 
-因此项目不是“只有一个简单 MLP”，而是把复杂视觉感知交给 MediaPipe，后端再用轻量模型做手势语义分类。这种设计适合实时控制、低延迟和课堂现场演示。
+视觉检测由 MediaPipe Hands 完成，后端只处理结构化关键点特征，因此系统可以保持实时、轻量、容易解释。
 
-## 成熟版的核心改进
+## 最终保留的核心改进
 
-### 1. 模型选择不再固定为 MLP
+### 1. 本地数据训练与模型比较
 
-新增 `tools/compare_models.py`，可自动比较多种轻量分类器：
+最终演示模型使用本地采集数据训练。训练流程保留：
 
-- MLP
-- SVM
-- RandomForest
-- ExtraTrees
-- HistGradientBoosting
-- KNN
+- 数据审计；
+- group split，避免同一采集 session 的相邻帧同时出现在训练集和测试集；
+- 特征级数据增强；
+- 类别平衡；
+- 多模型比较，并按 `macro_f1` 保存最佳模型。
 
-它会使用相同训练集、相同测试集、相同特征增强策略进行公平比较，并根据 `macro_f1` 默认选择最优模型，保存为：
+推荐训练命令：
 
-```text
-gesture_model.joblib
-gesture_scaler.joblib
+```bash
+bash tools/run_project_pipeline.sh
 ```
 
-推荐命令：
+或手动比较模型：
 
 ```bash
 python tools/compare_models.py \
@@ -44,139 +40,89 @@ python tools/compare_models.py \
   --metric macro_f1
 ```
 
-答辩时可以说：
+外部数据导入工具仍保留在仓库中，但最终演示路线不使用 RPS 或 HaGRID 数据。实验表明它们与本地摄像头场景存在分布差异，直接合入最终模型不如本地数据路线稳定。
 
-> 我们不是直接假定 MLP 最优，而是对多种轻量模型进行了实验对比，最终选择兼顾准确率、鲁棒性和实时性的模型。
+### 2. PPT 放映时可见的 HUD
 
-### 2. 本地特征增强训练
-
-项目已经采集到数千条真实 MediaPipe 手部特征。与其下载数百 GB 外部原图，不如直接在 69 维特征上做轻量增强：
-
-- 小角度旋转：模拟手势略微倾斜
-- 随机缩放：模拟手离摄像头远近变化
-- 坐标噪声：模拟 MediaPipe 关键点抖动
-- 弱类过采样：缓解 `NONE` 等类别样本过少
-
-增强只作用于训练集，不作用于测试集，因此不会把增强后的相似样本泄漏到测试集。
-
-### 3. 质量更高但轻量的数据路线
-
-不再建议直接下载 HaGRID 全量类别。HaGRID 质量高，但单类原图压缩包可达几十 GB。当前项目不是图片 CNN，而是 MediaPipe 特征 + 轻量分类器，因此全量图片成本过高。
-
-成熟版保留两条数据扩展路线：
-
-#### 路线 A：通用图片文件夹导入器
-
-新增 `tools/import_image_folder.py`，可导入任何按类别放置的图片数据集：
-
-```text
-dataset_root/
-  rock/
-  paper/
-  scissors/
-```
-
-示例映射：
+正式演示推荐：
 
 ```bash
-python tools/import_image_folder.py \
-  --dataset-root datasets/rps/rps \
-  --map rock=FIST paper=OPEN_PALM scissors=PEACE_UP \
-  --source-name rps_train \
-  --output-dir training_data/imported
+python main.py --headless --hud
 ```
 
-#### 路线 B：轻量 RPS 数据集
+该模式不显示完整摄像头窗口，只显示一个悬浮 HUD，用于查看：
 
-新增 `tools/download_rps_dataset.py`，可下载 Rock-Paper-Scissors 数据集。它只补充 3 个关键类：
+- 当前识别手势；
+- 当前动作提示；
+- 置信度；
+- 识别后端；
+- 当前模式。
+
+这解决了 PPT 全屏放映后看不到识别结果的问题。
+
+### 3. 左右翻页的几何方向修正
+
+`LEFT_POINT` / `RIGHT_POINT` 是 PPT 控制的核心动作。最终版本在分类模型判断为指向类手势后，使用食指关键点方向修正左/右方向。
+
+这种方式不是让几何规则单独决定命令，而是：
 
 ```text
-rock     → FIST
-paper    → OPEN_PALM
-scissors → PEACE_UP
+模型判断：当前是否属于指向类
+几何判断：如果是指向类，方向到底偏左还是偏右
 ```
 
-这个数据集不能替代本地数据，但适合作为轻量高质量外部补充。
+这样可以减少左右方向误判，同时避免把 `NONE`、`THUMB_UP`、`THREE_FINGERS` 等非指向手势直接变成翻页命令。
 
-### 4. 置信度可视化
+### 4. 高风险动作更严格
 
-运行界面现在会显示：
+普通翻页保持响应速度；高风险动作需要更长稳定帧：
 
-- 当前识别手势
-- 模型置信度条
-- 当前识别后端：`ml` / `rule` / `rule-pinch`
-- 下一步将触发的动作提示
-
-这能让演示从“看起来像按键脚本”变成“可解释的人机交互系统”。老师可以直接看到模型何时有把握、何时因为置信度不足而不触发。
-
-### 5. 动作预判展示面板
-
-左上角新增展示面板：
-
-```text
-GestureSlide
-MediaPipe Hands + MLP Classifier
-Action: Next slide / Start slideshow / Move cursor ...
+```python
+GESTURE_HOLD_FRAMES = 5
+HIGH_RISK_GESTURE_HOLD_FRAMES = 10
 ```
 
-底部状态栏还会显示：
+高风险动作包括：
 
-```text
-Next action: Previous slide / Enter mouse mode / Volume up ...
-```
-
-观众不用看代码，也能理解系统当前处于什么状态、识别到了什么、准备执行什么动作。
-
-## 一键成熟训练流程
-
-### 不使用外部图片，仅用现有数据增强 + 模型对比
-
-```bash
-bash tools/run_project_pipeline.sh
-```
-
-### 使用轻量 RPS 外部数据补充
-
-```bash
-USE_RPS=1 bash tools/run_project_pipeline.sh
-```
-
-该脚本会执行：
-
-```text
-语法检查 → 数据审计 → 可选 RPS 导入 → 特征增强 → 多模型对比 → 保存最优模型
-```
+- 开始放映；
+- 退出放映；
+- 进入鼠标模式；
+- 鼠标点击。
 
 ## 推荐演示流程
 
-1. 打开 PPT，并让 PPT 窗口获得焦点。
+### 正式演示
+
+1. 打开 PPT/WPS 并进入放映；
 2. 运行：
 
 ```bash
-python main.py
+python main.py --headless --hud
 ```
 
-3. 展示普通模式：
-   - 竖拇指 / OK：开始放映
-   - 左指 / 右指：翻页
-   - V 朝上 / 朝下：音量调节
-   - 五指张开：退出放映
+3. 展示核心动作：
 
-4. 展示鼠标模式：
-   - 食指朝上：进入鼠标模式
-   - 食指移动：移动鼠标
-   - 捏合：点击
-   - 五指张开：退出鼠标模式
+| 手势 | 动作 |
+|------|------|
+| 👌 OK / 👍 竖拇指 | 开始放映 |
+| 👈 食指左指 | 上一页 |
+| 👉 食指右指 | 下一页 |
+| 🖐 五指张开 | 退出放映 |
 
-5. 重点讲解界面上的置信度条、动作预判和模型对比训练结果。
+### 调试展示
 
-## 答辩时可以强调的技术特点
+```bash
+python main.py --preview small --hud
+```
 
-- 使用 MediaPipe Hands 实时提取 21 个手部关键点。
-- 将关键点、手指状态、捏合距离组成 69 维结构化特征。
-- 分类器不是固定死的，系统可自动比较 MLP、SVM、RandomForest、ExtraTrees、HGB 等轻量模型。
-- 使用 group split 避免同一采集 session 的相邻帧同时进入训练和测试。
-- 使用特征增强提升对角度、距离、关键点抖动的鲁棒性。
-- 使用置信度阈值、连续帧稳定器和冷却时间减少误触发。
-- 普通 PPT 控制和鼠标控制是两个状态机模式，便于扩展。
-- 界面具备实时置信度和动作预判，可解释性强，适合课堂展示。
+该模式会同时显示摄像头预览和 HUD，适合解释手部关键点、识别结果和动作映射。
+
+## 答辩时可以强调
+
+- 系统不是直接用整张图片训练大模型，而是用 MediaPipe 提取关键点后训练轻量分类器；
+- 69 维特征包含关键点坐标、手指伸展状态和拇指食指距离；
+- 训练流程使用 group split，避免相邻帧泄漏造成虚高准确率；
+- 最终模型保留本地数据增强和类别平衡，不使用效果不稳定的外部数据；
+- PPT 全屏时仍可通过 HUD 查看识别状态；
+- 左右翻页使用“分类器 + 几何方向修正”；
+- 高风险动作需要更长稳定帧，减少误触发。
