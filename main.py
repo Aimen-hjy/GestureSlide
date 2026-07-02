@@ -5,6 +5,7 @@
   python main.py                         # 正常运行
   python main.py --collect               # 数据采集模式 (训练用)
   python main.py --ppt demo.pptx --start # 打开PPT并自动开始放映
+  python main.py --headless --hud        # 正式演示：只显示悬浮识别HUD
 
 按 'q' 键退出程序；headless 模式下使用 Ctrl+C 退出。
 """
@@ -38,7 +39,6 @@ SWP_NOSIZE = 0x0001
 def set_window_topmost():
     """尽量将 OpenCV 预览窗口置顶。"""
     try:
-        # OpenCV/Qt 后端在 Linux/Windows 上通常支持这个属性；失败时静默降级。
         cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_TOPMOST, 1)
     except Exception:
         pass
@@ -97,23 +97,24 @@ def print_instructions():
     print("=" * 60)
     print()
     print("  📷 请确保摄像头已连接")
-    print("  🛡  默认启用安全门控：先做 OK/竖拇指激活，再执行翻页等命令")
+    print("  🪟 可用 --hud 显示悬浮识别状态，不必显示完整摄像头画面")
     print()
     print("  普通模式:")
-    print("    👌  OK手势/👍竖拇指 → 激活命令窗口；首次激活会开始放映 (F5)")
     print("    👈  食指左指       →  上一页")
     print("    👉  食指右指       →  下一页")
     print("    🖐  五指张开       →  退出放映 (Esc)")
+    print("    👌  OK手势         →  开始放映 (F5)")
     print("    ☝️  食指朝上       →  进入鼠标模式")
     print("    ✌️  V手势朝上       →  音量增大")
     print("    ✌️  V手势朝下       →  音量减小")
+    print("    👍  竖拇指         →  开始放映")
     print()
     print("  鼠标模式:")
     print("    ☝️  移动食指       →  移动光标")
     print("    🤏  拇指食指捏合   →  鼠标点击")
     print("    🖐  五指张开       →  退出鼠标模式")
     print()
-    print("  调试: 按 'q' 退出；正式演示 headless 模式下用 Ctrl+C 退出")
+    print("  调试: 按 'q' 退出；headless 模式下用 Ctrl+C 退出")
     print("-" * 60)
 
 
@@ -273,6 +274,20 @@ def run_collection_mode():
         print("[采集] 资源已释放")
 
 
+def make_hud_state(controller: PPTController) -> dict:
+    """Build a compact state dict for the floating HUD."""
+    mode = "Mouse" if controller.mode.name == "MOUSE" else "Normal"
+    gesture = controller.current_gesture.name if controller.current_gesture else "NONE"
+    return {
+        "mode": mode,
+        "gesture": gesture,
+        "action": controller._action_hint(),
+        "status": controller.status_message,
+        "confidence": controller.current_confidence,
+        "backend": controller.current_backend,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Gesture PPT Controller")
     parser.add_argument("--collect", action="store_true",
@@ -287,6 +302,10 @@ def main():
                         help="Run without the camera preview window; use Ctrl+C to exit")
     parser.add_argument("--preview", choices=("normal", "small"), default="normal",
                         help="Camera preview size when not using --headless")
+    parser.add_argument("--hud", action="store_true",
+                        help="Show a small always-on-top gesture status HUD")
+    parser.add_argument("--hud-position", choices=("top-right", "top-left", "bottom-right", "bottom-left"),
+                        default="top-right", help="Initial HUD position")
     args = parser.parse_args()
 
     if args.collect:
@@ -296,6 +315,15 @@ def main():
     print_instructions()
 
     controller = PPTController()
+    hud = None
+    if args.hud:
+        try:
+            from hud_window import GestureHUD
+            hud = GestureHUD(position=args.hud_position)
+            print("[系统] 悬浮 HUD 已启动。双击 HUD 可关闭，拖拽可移动。")
+        except Exception as exc:
+            print(f"[警告] 无法启动 HUD: {exc}")
+            print("[提示] Linux/conda 环境可能需要安装 tkinter，例如 conda install tk")
 
     if args.ppt:
         try:
@@ -305,8 +333,7 @@ def main():
                 time.sleep(max(0.0, args.open_delay))
                 controller.action_controller.start_slideshow()
                 controller.slideshow_started = True
-                controller._activate_command_gate()
-                print("[系统] 已发送 F5，命令门控已激活")
+                print("[系统] 已发送 F5")
         except Exception as exc:
             print(f"[警告] 无法自动打开/开始演示: {exc}")
 
@@ -316,6 +343,8 @@ def main():
 
     if not cap.isOpened():
         print("[错误] 无法打开摄像头! 请检查摄像头连接。")
+        if hud is not None:
+            hud.close()
         controller.close()
         sys.exit(1)
 
@@ -325,6 +354,8 @@ def main():
     print("[系统] 初始化完成，开始处理视频流...")
     if args.headless:
         print("[系统] Headless 模式：不显示摄像头窗口，使用 Ctrl+C 退出。")
+    if args.hud:
+        print("[系统] HUD 模式：放映时可查看当前手势/动作/置信度。")
     print()
 
     _topmost_set = False
@@ -340,6 +371,10 @@ def main():
                 frame = cv2.flip(frame, 1)
 
             output_frame = controller.process_frame(frame)
+
+            if hud is not None:
+                if not hud.update(make_hud_state(controller)):
+                    hud = None
 
             if args.headless:
                 time.sleep(0.001)
@@ -362,6 +397,8 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
+        if hud is not None:
+            hud.close()
         controller.close()
         cap.release()
         cv2.destroyAllWindows()
