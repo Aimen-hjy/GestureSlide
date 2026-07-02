@@ -314,9 +314,12 @@ class PPTController:
 
         elif gesture in (Gesture.OK_SIGN, Gesture.THUMB_UP):
             if self.gesture_classifier.should_trigger(gesture):
-                self.action_controller.start_slideshow()
-                self.slideshow_started = True
-                self.status_message = "Start Slideshow"
+                if not self.slideshow_started:
+                    self.action_controller.start_slideshow()
+                    self.slideshow_started = True
+                    self.status_message = "Start Slideshow"
+                else:
+                    self.status_message = "Slideshow Running"
                 self._extend_command_gate_after_action()
 
     def _handle_mouse_mode(self, gesture: Gesture, landmarks: list):
