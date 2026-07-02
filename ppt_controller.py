@@ -32,7 +32,7 @@ class PPTController:
         self.mode = ControllerMode.NORMAL
         self.slideshow_started = False
 
-        # Command safety gate is kept as an optional switch, but disabled by default.
+        # Optional safety gate, disabled in the final demo flow.
         self.command_gate_enabled = bool(getattr(config, "COMMAND_GATE_ENABLED", False))
         self._command_active_until = 0.0
 
@@ -60,7 +60,7 @@ class PPTController:
         self._volume_debounce: int = 0          # debounce for press
         self._volume_tick: int = 0              # frame counter for rapid press
 
-    # ==================== Command gate ====================
+    # ==================== Optional command gate ====================
 
     def _is_unlock_gesture(self, gesture: Gesture) -> bool:
         return gesture in (Gesture.OK_SIGN, Gesture.THUMB_UP)
@@ -100,15 +100,24 @@ class PPTController:
         self.status_message = "Locked: show OK/Thumb Up before command"
         return False
 
-    def gate_status_text(self) -> str:
+    def control_status_text(self) -> str:
+        """Short status line for overlay/HUD.
+
+        Do not show gate wording in the normal final demo because the optional
+        gate is disabled by default and would confuse the presentation.
+        """
         if not self.command_gate_enabled:
-            return "Gate: OFF"
+            return "Control: Direct"
         if self.mode == ControllerMode.MOUSE:
-            return "Gate: MOUSE"
+            return "Control: Mouse"
         remaining = self._gate_remaining()
         if remaining > 0:
-            return f"Gate: ACTIVE {remaining:.1f}s"
-        return "Gate: LOCKED"
+            return f"Control: Active {remaining:.1f}s"
+        return "Control: Locked"
+
+    # Backward-compatible alias used by older UI code.
+    def gate_status_text(self) -> str:
+        return self.control_status_text()
 
     # ==================== Practical recognition helpers ====================
 
@@ -146,11 +155,9 @@ class PPTController:
     def _geometry_direction_override(self, raw_gesture: Gesture, hand_data: dict) -> Gesture:
         """Use index-finger geometry only to refine pointing candidates.
 
-        The offline test showed the pure geometry rule recognizes most
-        LEFT/RIGHT samples, but also turns local NONE-like boundary samples into
-        LEFT_POINT. Therefore geometry must not create a page command from an
-        unrelated model result. It only refines gestures already judged to be an
-        index-pointing family by the classifier.
+        Geometry is intentionally conservative: it does not create a page command
+        from NONE or unrelated gestures. It only corrects direction when the
+        classifier has already identified an index-pointing family gesture.
         """
         if not getattr(config, "GEOMETRY_DIRECTION_OVERRIDE", True):
             return raw_gesture
@@ -220,11 +227,10 @@ class PPTController:
             raw_gesture = self._geometry_direction_override(raw_gesture, hand_data)
             self.current_gesture = raw_gesture
 
-            # Volume rapid-press remains a direct raw gesture path. It is not a
-            # core PPT command and can be ignored during normal demo if unused.
+            # Volume is optional and not part of the core PPT demo. It is kept
+            # here because the gesture/action mapping is already implemented.
             VOLUME_INTERVAL = 5  # press every N frames (~6/sec at 30fps)
-            if (self._is_command_gate_open()
-                    and raw_gesture in (Gesture.PEACE_UP, Gesture.PEACE_DOWN)):
+            if raw_gesture in (Gesture.PEACE_UP, Gesture.PEACE_DOWN):
                 target = "up" if raw_gesture == Gesture.PEACE_UP else "down"
                 if self._volume_active == target:
                     self._volume_tick += 1
@@ -418,9 +424,9 @@ class PPTController:
         cv2.rectangle(overlay, (x, y), (x + w, y + h), config.COLOR_PRIMARY, 1)
         cv2.putText(overlay, "GestureSlide", (x + 12, y + 25),
                     config.FONT_FACE, 0.7, config.COLOR_PRIMARY, 2)
-        cv2.putText(overlay, "MediaPipe Hands + Lightweight Classifier", (x + 12, y + 48),
+        cv2.putText(overlay, "MediaPipe + Local ML + Geometry", (x + 12, y + 48),
                     config.FONT_FACE, 0.46, config.COLOR_TEXT, 1)
-        cv2.putText(overlay, self.gate_status_text(), (x + 12, y + 70),
+        cv2.putText(overlay, self.control_status_text(), (x + 12, y + 70),
                     config.FONT_FACE, 0.48,
                     config.COLOR_PRIMARY if self._is_command_gate_open() else config.COLOR_WARNING, 1)
         cv2.putText(overlay, f"Action: {self._action_hint()}", (x + 12, y + 92),
@@ -453,7 +459,7 @@ class PPTController:
         mode_text = "Mouse Mode" if self.mode == ControllerMode.MOUSE else "Normal Mode"
         gesture_name = self.current_gesture.name if self.current_gesture else "NONE"
 
-        line1 = f"Mode: {mode_text}  |  Gesture: {gesture_name}  |  {self.gate_status_text()}"
+        line1 = f"Mode: {mode_text}  |  Gesture: {gesture_name}  |  {self.control_status_text()}"
         cv2.putText(overlay, line1, (10, bar_y + 26),
                     config.FONT_FACE, config.FONT_SCALE,
                     config.COLOR_PRIMARY, config.FONT_THICKNESS)
