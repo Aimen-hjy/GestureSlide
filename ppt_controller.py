@@ -1,5 +1,5 @@
 """
-PPT Controller — Core state machine, coordinates gesture recognition & action execution.
+PPT Controller — Core state machine, coordinates gesture recognition and action execution.
 """
 
 import time
@@ -16,8 +16,8 @@ from action_controller import ActionController
 
 class ControllerMode(Enum):
     """Controller working mode."""
-    NORMAL = auto()    # Normal mode: slide nav / slideshow / volume
-    MOUSE = auto()     # Mouse mode: cursor move / click
+    NORMAL = auto()    # Slide navigation / slideshow / optional volume control
+    MOUSE = auto()     # Cursor movement / click
 
 
 class PPTController:
@@ -28,13 +28,8 @@ class PPTController:
         self.gesture_classifier = GestureClassifier()
         self.action_controller = ActionController()
 
-        # Current mode
         self.mode = ControllerMode.NORMAL
         self.slideshow_started = False
-
-        # Optional safety gate, disabled in the final demo flow.
-        self.command_gate_enabled = bool(getattr(config, "COMMAND_GATE_ENABLED", False))
-        self._command_active_until = 0.0
 
         # Variable-hold stabilizer. Low-risk gestures stay responsive; high-risk
         # gestures need more frames before execution.
@@ -46,7 +41,7 @@ class PPTController:
         self._mouse_ref_y: float | None = None
         self._last_mouse_time = 0.0
 
-        # State info (for UI/HUD rendering)
+        # State info for OpenCV overlay and HUD
         self.current_gesture: Gesture = Gesture.NONE
         self.current_finger_states: list[bool] = [False] * 5
         self.current_confidence: float = 0.0
@@ -55,75 +50,19 @@ class PPTController:
         self.fps: float = 0.0
         self._fps_times: list[float] = []
 
-        # Volume key hold state
+        # Optional volume key hold state
         self._volume_active: str | None = None  # "up" / "down" / None
-        self._volume_debounce: int = 0          # debounce for press
-        self._volume_tick: int = 0              # frame counter for rapid press
-
-    # ==================== Optional command gate ====================
-
-    def _is_unlock_gesture(self, gesture: Gesture) -> bool:
-        return gesture in (Gesture.OK_SIGN, Gesture.THUMB_UP)
-
-    def _is_command_gate_open(self) -> bool:
-        if not self.command_gate_enabled:
-            return True
-        if self.mode == ControllerMode.MOUSE:
-            return True
-        return time.time() <= self._command_active_until
-
-    def _gate_remaining(self) -> float:
-        if not self.command_gate_enabled:
-            return 0.0
-        return max(0.0, self._command_active_until - time.time())
-
-    def _activate_command_gate(self):
-        if not self.command_gate_enabled:
-            return
-        timeout = float(getattr(config, "COMMAND_GATE_TIMEOUT", 5.0))
-        self._command_active_until = time.time() + timeout
-
-    def _extend_command_gate_after_action(self):
-        if getattr(config, "COMMAND_GATE_EXTEND_ON_ACTION", True):
-            self._activate_command_gate()
-
-    def _should_execute_stable_gesture(self, gesture: Gesture) -> bool:
-        if not self.command_gate_enabled:
-            return True
-        if self.mode == ControllerMode.MOUSE:
-            return True
-        if self._is_unlock_gesture(gesture):
-            self._activate_command_gate()
-            return True
-        if self._is_command_gate_open():
-            return True
-        self.status_message = "Locked: show OK/Thumb Up before command"
-        return False
-
-    def control_status_text(self) -> str:
-        """Short status line for overlay/HUD.
-
-        Do not show gate wording in the normal final demo because the optional
-        gate is disabled by default and would confuse the presentation.
-        """
-        if not self.command_gate_enabled:
-            return "Control: Direct"
-        if self.mode == ControllerMode.MOUSE:
-            return "Control: Mouse"
-        remaining = self._gate_remaining()
-        if remaining > 0:
-            return f"Control: Active {remaining:.1f}s"
-        return "Control: Locked"
-
-    # Backward-compatible alias used by older UI code.
-    def gate_status_text(self) -> str:
-        return self.control_status_text()
+        self._volume_debounce: int = 0
+        self._volume_tick: int = 0
 
     # ==================== Practical recognition helpers ====================
 
+    def control_status_text(self) -> str:
+        return "Control: Mouse" if self.mode == ControllerMode.MOUSE else "Control: Direct"
+
     def _is_high_risk_gesture(self, gesture: Gesture) -> bool:
         return gesture in {
-            Gesture.OPEN_PALM,      # exit slideshow
+            Gesture.OPEN_PALM,      # exit slideshow / mouse mode
             Gesture.OK_SIGN,        # start slideshow
             Gesture.THUMB_UP,       # start slideshow
             Gesture.POINT_INDEX,    # enter mouse mode
@@ -155,9 +94,9 @@ class PPTController:
     def _geometry_direction_override(self, raw_gesture: Gesture, hand_data: dict) -> Gesture:
         """Use index-finger geometry only to refine pointing candidates.
 
-        Geometry is intentionally conservative: it does not create a page command
-        from NONE or unrelated gestures. It only corrects direction when the
-        classifier has already identified an index-pointing family gesture.
+        Geometry does not create a page command from NONE or unrelated gestures.
+        It only corrects direction when the classifier has already identified an
+        index-pointing family gesture.
         """
         if not getattr(config, "GEOMETRY_DIRECTION_OVERRIDE", True):
             return raw_gesture
@@ -175,7 +114,7 @@ class PPTController:
         if len(finger_states) < 5:
             return raw_gesture
 
-        thumb, index, middle, ring, pinky = finger_states[:5]
+        _thumb, index, middle, ring, pinky = finger_states[:5]
         if not index or middle or ring or pinky:
             return raw_gesture
 
@@ -227,39 +166,14 @@ class PPTController:
             raw_gesture = self._geometry_direction_override(raw_gesture, hand_data)
             self.current_gesture = raw_gesture
 
-            # Volume is optional and not part of the core PPT demo. It is kept
-            # here because the gesture/action mapping is already implemented.
-            VOLUME_INTERVAL = 5  # press every N frames (~6/sec at 30fps)
-            if raw_gesture in (Gesture.PEACE_UP, Gesture.PEACE_DOWN):
-                target = "up" if raw_gesture == Gesture.PEACE_UP else "down"
-                if self._volume_active == target:
-                    self._volume_tick += 1
-                    if self._volume_tick >= VOLUME_INTERVAL:
-                        if target == "up":
-                            self.action_controller.volume_up_press()
-                        else:
-                            self.action_controller.volume_down_press()
-                        self._volume_tick = 0
-                else:
-                    self._volume_debounce += 1
-                    if self._volume_debounce >= 3:
-                        self._volume_active = target
-                        self._volume_debounce = 0
-                        self._volume_tick = 0
-                        target_name = "Up" if target == "up" else "Down"
-                        self.status_message = f"Volume {target_name}"
-            else:
-                self._volume_debounce = 0
-                self._volume_active = None
-
+            self._handle_optional_volume(raw_gesture)
             stable_gesture = self._stable_gesture_with_variable_hold(raw_gesture)
 
             # Mouse movement is continuous and should not wait for stable trigger.
-            if (self.mode == ControllerMode.MOUSE
-                    and raw_gesture == Gesture.POINT_INDEX):
+            if self.mode == ControllerMode.MOUSE and raw_gesture == Gesture.POINT_INDEX:
                 self._handle_mouse_move(landmarks)
 
-            if stable_gesture != Gesture.NONE and self._should_execute_stable_gesture(stable_gesture):
+            if stable_gesture != Gesture.NONE:
                 self._handle_gesture(stable_gesture, hand_data)
 
             frame = self.hand_detector.draw_hand(frame, hand_data["raw"])
@@ -277,6 +191,31 @@ class PPTController:
 
         return self._render_overlay(frame)
 
+    def _handle_optional_volume(self, raw_gesture: Gesture):
+        """Handle optional V-gesture volume control."""
+        interval = 5  # press every N frames (~6/sec at 30fps)
+        if raw_gesture in (Gesture.PEACE_UP, Gesture.PEACE_DOWN):
+            target = "up" if raw_gesture == Gesture.PEACE_UP else "down"
+            if self._volume_active == target:
+                self._volume_tick += 1
+                if self._volume_tick >= interval:
+                    if target == "up":
+                        self.action_controller.volume_up_press()
+                    else:
+                        self.action_controller.volume_down_press()
+                    self._volume_tick = 0
+            else:
+                self._volume_debounce += 1
+                if self._volume_debounce >= 3:
+                    self._volume_active = target
+                    self._volume_debounce = 0
+                    self._volume_tick = 0
+                    target_name = "Up" if target == "up" else "Down"
+                    self.status_message = f"Volume {target_name}"
+        else:
+            self._volume_debounce = 0
+            self._volume_active = None
+
     def _handle_gesture(self, gesture: Gesture, hand_data: dict):
         """Execute action based on current mode and gesture."""
         landmarks = hand_data["landmarks"]
@@ -291,26 +230,22 @@ class PPTController:
             if self.gesture_classifier.should_trigger(gesture, config.SWIPE_GESTURE_COOLDOWN):
                 self.action_controller.prev_slide()
                 self.status_message = "Prev Slide"
-                self._extend_command_gate_after_action()
 
         elif gesture == Gesture.RIGHT_POINT:
             if self.gesture_classifier.should_trigger(gesture, config.SWIPE_GESTURE_COOLDOWN):
                 self.action_controller.next_slide()
                 self.status_message = "Next Slide"
-                self._extend_command_gate_after_action()
 
         elif gesture == Gesture.OPEN_PALM:
             if self.gesture_classifier.should_trigger(gesture):
                 self.action_controller.exit_slideshow()
                 self.slideshow_started = False
                 self.status_message = "Exit Slideshow"
-                self._command_active_until = 0.0
 
         elif gesture == Gesture.POINT_INDEX:
             if self.gesture_classifier.should_trigger(gesture):
                 self._enter_mouse_mode(landmarks)
                 self.status_message = "Enter Mouse Mode"
-                self._extend_command_gate_after_action()
 
         elif gesture in (Gesture.OK_SIGN, Gesture.THUMB_UP):
             if self.gesture_classifier.should_trigger(gesture):
@@ -320,7 +255,6 @@ class PPTController:
                     self.status_message = "Start Slideshow"
                 else:
                     self.status_message = "Slideshow Running"
-                self._extend_command_gate_after_action()
 
     def _handle_mouse_mode(self, gesture: Gesture, landmarks: list):
         """Mouse mode gesture handling."""
@@ -328,7 +262,6 @@ class PPTController:
             if self.gesture_classifier.should_trigger(gesture):
                 self._exit_mouse_mode()
                 self.status_message = "Exit Mouse Mode, Ready"
-                self._extend_command_gate_after_action()
             return
 
         if gesture == Gesture.PINCH:
@@ -390,12 +323,6 @@ class PPTController:
 
     def _action_hint(self) -> str:
         """Human-readable next action for the demo overlay/HUD."""
-        if (self.command_gate_enabled
-                and self.mode == ControllerMode.NORMAL
-                and not self._is_command_gate_open()
-                and self.current_gesture not in (Gesture.OK_SIGN, Gesture.THUMB_UP)):
-            return "Locked: OK/Thumb Up activates commands"
-
         if self.mode == ControllerMode.MOUSE:
             mapping = {
                 Gesture.POINT_INDEX: "Move cursor",
@@ -430,8 +357,7 @@ class PPTController:
         cv2.putText(overlay, "MediaPipe + Local ML + Geometry", (x + 12, y + 48),
                     config.FONT_FACE, 0.46, config.COLOR_TEXT, 1)
         cv2.putText(overlay, self.control_status_text(), (x + 12, y + 70),
-                    config.FONT_FACE, 0.48,
-                    config.COLOR_PRIMARY if self._is_command_gate_open() else config.COLOR_WARNING, 1)
+                    config.FONT_FACE, 0.48, config.COLOR_PRIMARY, 1)
         cv2.putText(overlay, f"Action: {self._action_hint()}", (x + 12, y + 92),
                     config.FONT_FACE, 0.46, config.COLOR_SECONDARY, 1)
 
