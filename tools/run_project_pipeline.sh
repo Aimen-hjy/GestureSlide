@@ -15,6 +15,10 @@
 # Tunable examples:
 #   BALANCE_TARGET=800 AUGMENT_FACTOR=2 bash tools/run_project_pipeline.sh
 #   MODELS="hgb extra_trees random_forest" bash tools/run_project_pipeline.sh
+#
+# If training_data/imported contains old experiment files, this script stops by
+# default. Remove/move those files for the final local-only model, or explicitly
+# set INCLUDE_IMPORTED=1 for a non-final experiment.
 
 set -euo pipefail
 
@@ -22,7 +26,7 @@ AUGMENT_FACTOR="${AUGMENT_FACTOR:-2}"
 BALANCE_TARGET="${BALANCE_TARGET:-800}"
 SPLIT_STRATEGY="${SPLIT_STRATEGY:-group}"
 MODELS="${MODELS:-mlp svm random_forest extra_trees hgb}"
-CLEAN_IMPORTED="${CLEAN_IMPORTED:-1}"
+INCLUDE_IMPORTED="${INCLUDE_IMPORTED:-0}"
 
 python -m py_compile \
   main.py \
@@ -41,11 +45,15 @@ python -m py_compile \
 
 mkdir -p training_data/imported reports
 
-# Final model should be trained on local camera data. Remove previously imported
-# experiment data by default so reruns are reproducible. Set CLEAN_IMPORTED=0 to
-# keep all files under training_data/imported.
-if [[ "${CLEAN_IMPORTED}" == "1" ]]; then
-  rm -f training_data/imported/session_*.json 2>/dev/null || true
+if [[ "${INCLUDE_IMPORTED}" != "1" ]]; then
+  if find training_data/imported -maxdepth 1 -type f -name 'session_*.json' | grep -q .; then
+    echo "[error] training_data/imported contains session_*.json files."
+    echo "        The final pipeline expects local camera data only."
+    echo "        Move or remove those imported files, then rerun:"
+    echo "          rm -f training_data/imported/session_*.json"
+    echo "        For a non-final experiment, rerun with INCLUDE_IMPORTED=1."
+    exit 1
+  fi
 fi
 
 python tools/audit_training_data.py training_data/
