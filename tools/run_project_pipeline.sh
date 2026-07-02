@@ -14,10 +14,16 @@
 # Optional:
 #   USE_RPS=1 bash tools/run_project_pipeline.sh
 #   BALANCE_TARGET=800 AUGMENT_FACTOR=2 bash tools/run_project_pipeline.sh
+#   CLEAN_RPS=0 USE_RPS=1 bash tools/run_project_pipeline.sh  # keep previous RPS imports
+#
+# Important:
+#   RPS is supplemental and may hurt cross-session performance. The default
+#   USE_RPS=0 trains only on local GestureSlide data.
 
 set -euo pipefail
 
 USE_RPS="${USE_RPS:-0}"
+CLEAN_RPS="${CLEAN_RPS:-1}"
 RPS_ROOT="${RPS_ROOT:-datasets/rps}"
 AUGMENT_FACTOR="${AUGMENT_FACTOR:-2}"
 BALANCE_TARGET="${BALANCE_TARGET:-800}"
@@ -36,6 +42,10 @@ python -m py_compile \
   tools/audit_training_data.py \
   tools/import_image_folder.py \
   tools/compare_models.py
+
+if [[ "${CLEAN_RPS}" == "1" ]]; then
+  rm -f training_data/imported/session_rps_*.json 2>/dev/null || true
+fi
 
 python tools/audit_training_data.py training_data/
 
